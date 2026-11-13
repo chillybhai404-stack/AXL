@@ -1,5 +1,7 @@
-import os
+uvicornn os
 import uvicorn
+if os.environ.get("ANSAR"):
+    ADMIN_PASSWORD = os.environ["ANSAR"]
 
 if __name__ == "__main__":
     uvicorn.run("backend.main:app", host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
