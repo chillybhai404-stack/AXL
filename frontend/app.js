@@ -1,0 +1,332 @@
+const $ = s => document.querySelector(s);
+const $$ = s => [...document.querySelectorAll(s)];
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+let pw = sessionStorage.getItem("axu_pw") || "";
+let list = [], cur = null, files = {}, tabsOpen = [], active = null, dirty = new Set(), problems = [];
+let catalog = [], vault = [], ed = null, saveTimer = null, booted = false;
+
+async function api(path, opt = {}) {
+  const h = {"x-admin-password": pw};
+  let body = opt.body;
+  if (body && !(body instanceof FormData)) { h["content-type"] = "application/json"; body = JSON.stringify(body); }
+  const r = await fetch(path, {method: opt.method || "GET", headers: h, body});
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(typeof j.detail === "string" ? j.detail : "Something went wrong (" + r.status + ")");
+  return j;
+}
+function status(t, bad) { const e = $("#st-save"); e.textContent = t; e.className = bad ? "err" : ""; }
+
+// ---------- login + nav ----------
+async function enter() {
+  try { await api("/api/assistants"); }
+  catch (e) { $("#loginmsg").textContent = pw ? e.message : ""; return; }
+  sessionStorage.setItem("axu_pw", pw);
+  $("#login").hidden = true; $("#app").hidden = false;
+  if (!booted) boot();
+  catalog = await api("/api/addons");
+  await refresh(); loadKeys(); loadVault();
+}
+$("#loginbtn").onclick = () => { pw = $("#pw").value; enter(); };
+$("#pw").onkeydown = e => { if (e.key === "Enter") $("#loginbtn").click(); };
+$("#logout").onclick = () => { sessionStorage.removeItem("axu_pw"); location.reload(); };
+$$("#nav button").forEach(b => b.onclick = () => {
+  $$("#nav button").forEach(x => x.classList.toggle("on", x === b));
+  ["studio", "keys", "merger", "vault"].forEach(v => $("#view-" + v).hidden = v !== b.dataset.view);
+});
+$$("#ptabs button").forEach(b => b.onclick = () => {
+  $$("#ptabs button").forEach(x => x.classList.toggle("on", x === b));
+  $("#console").hidden = b.dataset.p !== "console"; $("#problems").hidden = b.dataset.p !== "problems";
+});
+
+function boot() {
+  booted = true;
+  ed = new Editor({
+    ta: $("#code"), hl: $("#hl"), gutter: $("#gutter"),
+    onChange: () => {
+      if (!active) return;
+      files[active] = ed.getValue(); dirty.add(active); renderTabs(); status("Unsaved changes");
+      const n = active; clearTimeout(saveTimer); saveTimer = setTimeout(() => saveFile(n), 900);
+    },
+    onCursor: (l, c) => $("#st-pos").textContent = `Ln ${l}, Col ${c}`,
+    onSave: () => active && saveFile(active),
+  });
+  $("#klimits").innerHTML = limitsGrid("k");
+  $("#mlimits").innerHTML = limitsGrid("m");
+  $("#vprov").innerHTML = Object.entries(PROV).map(([k, v]) => `<option value="${k}">${v[3]}</option>`).join("");
+  provDefaults();
+}
+
+// ---------- studio: assistants + project ----------
+async function refresh(keep) {
+  list = await api("/api/assistants");
+  const opts = list.map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join("");
+  $("#asel").innerHTML = opts; $("#kscope").innerHTML = opts;
+  if (keep && list.find(a => a.id == keep)) $("#asel").value = keep;
+  await loadProject();
+}
+async function loadProject() {
+  cur = list.find(a => a.id == $("#asel").value) || null;
+  files = {}; tabsOpen = []; active = null; dirty.clear(); problems = [];
+  if (cur) {
+    const src = await api(`/api/assistants/${cur.id}/sources`);
+    files = Object.fromEntries(src.map(f => [f.name, f.content]));
+    problems = (await api(`/api/assistants/${cur.id}/problems`)).errors;
+    tabsOpen = ["main.axl"]; active = "main.axl";
+  }
+  ed.setValue(active ? files[active] : "");
+  ed.setErrors(errLines(active));
+  renderAll();
+}
+const errLines = n => problems.filter(p => p.file === n).map(p => p.line);
+function renderAll() { renderTabs(); renderFiles(); renderTables(); renderAddons(); renderProblems(); }
+$("#asel").onchange = loadProject;
+
+$("#newbtn").onclick = async () => {
+  try {
+    const r = await api("/api/assistants", {method: "POST", body: {name: $("#newname").value}});
+    $("#newname").value = ""; await refresh(r.id); status("Assistant created with a starter project");
+  } catch (e) { status(e.message, true); }
+};
+$("#delassistant").onclick = async () => {
+  if (!cur || !confirm(`Delete "${cur.name}" and all its files and data?`)) return;
+  await api("/api/assistants/" + cur.id, {method: "DELETE"}); await refresh();
+};
+
+// tabs
+function renderTabs() {
+  $("#tabs").innerHTML = tabsOpen.map(n =>
+    `<div class="tab ${n === active ? "on" : ""}" data-open="${esc(n)}">${esc(n)}${dirty.has(n) ? '<i class="dot"></i>' : ""}<button class="x" data-close="${esc(n)}">&times;</button></div>`).join("");
+}
+$("#tabs").onclick = e => {
+  const c = e.target.dataset.close;
+  if (c) return closeTab(c);
+  const t = e.target.closest("[data-open]"); if (t) openFile(t.dataset.open);
+};
+function openFile(n) {
+  if (active) files[active] = ed.getValue();
+  active = n; if (!tabsOpen.includes(n)) tabsOpen.push(n);
+  ed.setValue(files[n] ?? ""); ed.setErrors(errLines(n)); renderTabs(); renderFiles();
+}
+function closeTab(n) {
+  if (tabsOpen.length < 2) return;
+  const i = tabsOpen.indexOf(n); tabsOpen.splice(i, 1);
+  if (n === active) openFile(tabsOpen[Math.max(0, i - 1)]); else renderTabs();
+}
+
+// files
+function renderFiles() {
+  $("#files").innerHTML = Object.keys(files).sort().map(n =>
+    `<div class="fitem ${n === active ? "on" : ""}" data-open="${esc(n)}"><span>${esc(n)}</span>${n === "main.axl" ? "" : `<button class="x" data-delfile="${esc(n)}" title="Delete">&times;</button>`}</div>`).join("");
+}
+$("#files").onclick = async e => {
+  const d = e.target.dataset.delfile;
+  if (d) {
+    if (!confirm(`Delete ${d}?`)) return;
+    const r = await api(`/api/assistants/${cur.id}/sources/${encodeURIComponent(d)}`, {method: "DELETE"});
+    delete files[d]; dirty.delete(d); tabsOpen = tabsOpen.filter(x => x !== d); problems = r.errors;
+    openFile(tabsOpen.includes(active) && active !== d ? active : "main.axl"); renderProblems(); return;
+  }
+  const t = e.target.closest("[data-open]"); if (t) openFile(t.dataset.open);
+};
+$("#newfile").onclick = () => { if (!cur) return; $("#newfilerow").hidden = false; $("#newfilename").focus(); };
+$("#newfilename").onkeydown = async e => {
+  if (e.key === "Escape") { $("#newfilerow").hidden = true; return; }
+  if (e.key !== "Enter") return;
+  const n = e.target.value.trim().replace(/\.axl$/i, "");
+  if (!/^[A-Za-z0-9_\-]{1,40}$/.test(n)) return status("File names can use letters, numbers, - and _", true);
+  const name = n + ".axl", content = `# ${name}\n`;
+  try {
+    await api(`/api/assistants/${cur.id}/sources`, {method: "PUT", body: {name, content}});
+    files[name] = content; e.target.value = ""; $("#newfilerow").hidden = true; openFile(name);
+  } catch (err) { status(err.message, true); }
+};
+
+// saving
+async function saveFile(n) {
+  if (!cur || files[n] === undefined) return;
+  status("Saving...");
+  try {
+    const r = await api(`/api/assistants/${cur.id}/sources`, {method: "PUT", body: {name: n, content: files[n]}});
+    dirty.delete(n); problems = r.errors; ed.setErrors(errLines(active)); renderTabs(); renderProblems();
+    status(problems.length ? `Saved - ${problems.length} problem${problems.length > 1 ? "s" : ""}` : "Saved", problems.length > 0);
+  } catch (e) { status(e.message, true); }
+}
+
+// problems
+function renderProblems() {
+  $("#pcount").textContent = problems.length;
+  $("#problems").innerHTML = problems.map((p, i) =>
+    `<div class="prob" data-prob="${i}"><span class="err">error</span> ${esc(p.file)}:${p.line} <span class="muted">${esc(p.message)}</span></div>`).join("") || '<div class="muted">No problems.</div>';
+}
+$("#problems").onclick = e => {
+  const t = e.target.closest("[data-prob]"); if (!t) return;
+  const p = problems[+t.dataset.prob]; openFile(p.file); ed.jumpTo(p.line);
+};
+
+// data
+function renderTables() {
+  $("#tables").innerHTML = cur ? (cur.tables.map(t =>
+    `<div class="fitem"><span><b>${esc(t.name)}</b> <small class="muted">${t.kind === "text" ? "document" : esc(t.columns)}</small></span><button class="x" data-deltable="${esc(t.name)}">&times;</button></div>`).join("") || '<div class="pad small muted">No uploaded data.</div>') : "";
+}
+async function reloadTables() { list = await api("/api/assistants"); cur = list.find(a => a.id == cur.id); renderTables(); }
+$("#tables").onclick = async e => {
+  const n = e.target.dataset.deltable; if (!n) return;
+  await api(`/api/assistants/${cur.id}/tables/${encodeURIComponent(n)}`, {method: "DELETE"}); reloadTables();
+};
+$("#upbtn").onclick = () => cur && $("#file").click();
+$("#file").onchange = async () => {
+  const f = $("#file").files[0]; if (!f) return;
+  const fd = new FormData(); fd.append("file", f); $("#file").value = "";
+  try {
+    const r = await api(`/api/assistants/${cur.id}/files`, {method: "POST", body: fd});
+    $("#dmsg").textContent = `Added "${r.table}" (${r.rows} ${r.kind === "text" ? "text chunks" : "rows"})`; reloadTables();
+  } catch (e) { $("#dmsg").textContent = e.message; }
+};
+$("#drivebtn").onclick = async () => {
+  try {
+    const r = await api(`/api/assistants/${cur.id}/drive`, {method: "POST", body: {url: $("#drive").value}});
+    $("#dmsg").textContent = `Imported "${r.table}" (${r.rows} ${r.kind === "text" ? "text chunks" : "rows"})`; reloadTables();
+  } catch (e) { $("#dmsg").textContent = e.message; }
+};
+
+// add-ons
+const hasAddon = n => new RegExp("^\\s*use\\s+" + n + "\\s*$", "mi").test(files["main.axl"] || "");
+function renderAddons() {
+  $("#addons").innerHTML = catalog.map(a =>
+    `<div class="addon"><div><b>${esc(a.title)}</b>${a.offline ? ' <span class="small muted">offline</span>' : ""}<div class="small muted">${esc(a.desc)}</div><div class="small ex">${esc(a.example)}</div></div>
+     <button class="sm ${hasAddon(a.name) ? "" : "primary"}" style="margin:0;align-self:flex-start" data-addon="${a.name}">${hasAddon(a.name) ? "Remove" : "Add"}</button></div>`).join("");
+}
+$("#addons").onclick = e => {
+  const n = e.target.dataset.addon; if (!n || !cur) return;
+  let t = files["main.axl"] || "";
+  if (hasAddon(n)) t = t.split("\n").filter(l => !new RegExp("^\\s*use\\s+" + n + "\\s*$", "i").test(l)).join("\n");
+  else {
+    const L = t.split("\n"); let at = -1;
+    L.forEach((l, i) => { if (/^\s*(use|import)\s/i.test(l)) at = i; });
+    if (at < 0) L.forEach((l, i) => { if (at < 0 && /^\s*assistant:/i.test(l)) at = i; });
+    L.splice(at + 1, 0, "use " + n); t = L.join("\n");
+  }
+  files["main.axl"] = t; dirty.add("main.axl");
+  if (active === "main.axl") ed.setValue(t, true);
+  renderAddons(); renderTabs(); saveFile("main.axl");
+};
+
+// console
+function log(kind, text, src) {
+  const d = document.createElement("div"); d.className = "l " + kind;
+  d.textContent = (kind === "you" ? "> " : "") + text;
+  if (src) { const s = document.createElement("span"); s.className = "src"; s.textContent = src; d.appendChild(s); }
+  $("#clog").appendChild(d); $("#clog").scrollTop = 1e9;
+}
+$("#tq").onkeydown = async e => {
+  if (e.key !== "Enter" || !cur) return;
+  const q = e.target.value.trim(); if (!q) return; e.target.value = "";
+  log("you", q);
+  try {
+    await Promise.all([...dirty].map(saveFile));
+    const r = await api(`/api/assistants/${cur.id}/test`, {method: "POST", body: {q}});
+    log("bot", r.answer, r.source + (r.debug ? " | " + r.debug : ""));
+  } catch (err) { log("bot", err.message, "error"); }
+};
+
+// ---------- limits grid (keys + merger) ----------
+const PRESETS = {trial: [50, 0, 100, 10, 7], starter: [1000, 20000, 0, 30, 0], unlimited: [0, 0, 0, 0, 0]};
+const LIM = [["day", "Per day", 1000], ["month", "Per month", 0], ["total", "Total (ever)", 0], ["min", "Per minute", 0], ["exp", "Expires in (days)", 0]];
+function limitsGrid(p) {
+  return `<label>Limits on responses (0 = unlimited)</label>
+  <div class="row">${Object.keys(PRESETS).map(k => `<button class="ghost sm" data-preset="${k}" data-prefix="${p}">${k[0].toUpperCase() + k.slice(1)}</button>`).join("")}</div>
+  <div class="grid">${LIM.map(([k, l, d]) => `<div><label for="${p}${k}">${l}</label><input id="${p}${k}" type="number" min="0" value="${d}"></div>`).join("")}</div>`;
+}
+const readLimits = p => { const v = k => +$(`#${p}${k}`).value || 0;
+  return {daily_limit: v("day"), monthly_limit: v("month"), total_limit: v("total"), per_minute: v("min"), expires_days: v("exp")}; };
+document.addEventListener("click", e => {
+  const b = e.target.closest("[data-preset]"); if (!b) return;
+  LIM.forEach(([k], i) => $(`#${b.dataset.prefix}${k}`).value = PRESETS[b.dataset.preset][i]);
+});
+
+// ---------- keys ----------
+function keyRow(k) {
+  const lim = n => n || "unlimited";
+  return `<div class="item"><span><b>${esc(k.prefix)}...</b> ${esc(k.label)} ${k.revoked ? '<span class="err">(revoked)</span>' : ""}<br>
+    <small class="muted">${k.bundle.length ? "merged: " + esc(k.bundle.join(", ")) + " (" + k.mode + ")" : esc(k.scope.join(", "))}<br>
+    ${k.usage.day}/${lim(k.limits.daily)} today, ${k.usage.month}/${lim(k.limits.monthly)} month, ${k.usage.total}/${lim(k.limits.total)} total${k.limits.per_minute ? ", " + k.limits.per_minute + "/min" : ""}${k.expires_at ? ", expires " + new Date(k.expires_at * 1000).toLocaleDateString() : ""}</small></span>
+    ${k.revoked ? "" : `<button class="sm" data-rev="${k.id}">Revoke</button>`}</div>`;
+}
+async function loadKeys() {
+  const ks = await api("/api/keys");
+  $("#klist").innerHTML = ks.map(keyRow).join("") || '<div class="muted">No keys yet.</div>';
+  $("#mkeys").innerHTML = ks.filter(k => k.bundle.length).map(keyRow).join("") || '<div class="muted">No merged keys yet.</div>';
+}
+function showKey(sel, key) {
+  const b = $(sel); b.hidden = false;
+  b.innerHTML = '<div class="muted small">Copy it now. It is shown only once.</div><code></code>';
+  b.querySelector("code").textContent = key;
+}
+document.addEventListener("click", async e => {
+  const id = e.target.dataset.rev;
+  if (id && confirm("Revoke this key?")) { await api(`/api/keys/${id}/revoke`, {method: "POST"}); loadKeys(); }
+});
+$("#kbtn").onclick = async () => {
+  try {
+    const r = await api("/api/keys", {method: "POST", body: {label: $("#klabel").value, assistants: [...$("#kscope").selectedOptions].map(o => +o.value), ...readLimits("k")}});
+    showKey("#kout", r.key); loadKeys();
+  } catch (e) { alert(e.message); }
+};
+
+// ---------- vault ----------
+const PROV = {
+  openai: ["openai", "https://api.openai.com/v1", "gpt-4o-mini", "OpenAI"],
+  anthropic: ["anthropic", "https://api.anthropic.com", "claude-haiku-5-5", "Anthropic"],
+  gemini: ["gemini", "https://generativelanguage.googleapis.com", "gemini-2.0-flash", "Google Gemini"],
+  groq: ["openai", "https://api.groq.com/openai/v1", "llama-3.1-8b-instant", "Groq"],
+  openrouter: ["openai", "https://openrouter.ai/api/v1", "openai/gpt-4o-mini", "OpenRouter"],
+  custom: ["openai", "", "", "Custom (OpenAI-compatible)"],
+};
+function provDefaults() { const p = PROV[$("#vprov").value]; $("#vurl").value = p[1]; $("#vmodel").value = p[2]; }
+$("#vprov").onchange = provDefaults;
+async function loadVault() {
+  vault = await api("/api/vault");
+  $("#vlist").innerHTML = vault.map(v =>
+    `<div class="item"><span><b>${esc(v.name)}</b><br><small class="muted">${esc(v.provider)} / ${esc(v.model || "default model")}</small></span><button class="sm" data-vdel="${esc(v.name)}">Delete</button></div>`).join("") || '<div class="muted">Vault is empty.</div>';
+  renderMerge();
+}
+$("#vbtn").onclick = async () => {
+  try {
+    const r = await api("/api/vault", {method: "PUT", body: {name: $("#vname").value, secret: $("#vsecret").value, provider: PROV[$("#vprov").value][0], base_url: $("#vurl").value, model: $("#vmodel").value}});
+    $("#vsecret").value = ""; $("#vmsg").className = "small ok"; $("#vmsg").textContent = "Saved as " + r.name; loadVault();
+  } catch (e) { $("#vmsg").className = "small err"; $("#vmsg").textContent = e.message; }
+};
+$("#vlist").onclick = async e => {
+  const n = e.target.dataset.vdel;
+  if (n && confirm("Delete this vault key?")) { await api("/api/vault/" + encodeURIComponent(n), {method: "DELETE"}); loadVault(); }
+};
+
+// ---------- key merger ----------
+let mOrder = [], mSel = new Set();
+function renderMerge() {
+  mOrder = mOrder.filter(n => vault.find(v => v.name === n));
+  vault.forEach(v => { if (!mOrder.includes(v.name)) mOrder.push(v.name); });
+  $("#mlist").innerHTML = mOrder.map((n, i) => {
+    const v = vault.find(x => x.name === n);
+    return `<div class="mrow"><label class="chk"><input type="checkbox" data-msel="${esc(n)}" ${mSel.has(n) ? "checked" : ""}><b>${esc(n)}</b> <span class="muted small">${esc(v.provider)} / ${esc(v.model || "default model")}</span></label>
+      <span><button class="x" data-mup="${i}" title="Move up">&uarr;</button><button class="x" data-mdown="${i}" title="Move down">&darr;</button></span></div>`;
+  }).join("") || '<div class="muted small">Add provider keys in the Vault first.</div>';
+}
+$("#mlist").onclick = e => {
+  const t = e.target;
+  if (t.dataset.msel) { t.checked ? mSel.add(t.dataset.msel) : mSel.delete(t.dataset.msel); return; }
+  const up = t.dataset.mup, down = t.dataset.mdown;
+  const i = up !== undefined ? +up : down !== undefined ? +down : -1, j = up !== undefined ? i - 1 : i + 1;
+  if (i < 0 || j < 0 || j >= mOrder.length) return;
+  [mOrder[i], mOrder[j]] = [mOrder[j], mOrder[i]]; renderMerge();
+};
+$("#mbtn").onclick = async () => {
+  const bundle = mOrder.filter(n => mSel.has(n));
+  if (!bundle.length) return alert("Tick at least one key to merge.");
+  try {
+    const r = await api("/api/keys", {method: "POST", body: {label: $("#mlabel").value, assistants: [], bundle, bundle_mode: $("#mmode").value, ...readLimits("m")}});
+    showKey("#mout", r.key); loadKeys();
+  } catch (e) { alert(e.message); }
+};
+
+if (pw) enter();
