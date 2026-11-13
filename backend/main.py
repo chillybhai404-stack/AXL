@@ -5,8 +5,16 @@ from fastapi import FastAPI, Depends, Header, HTTPException, UploadFile, File
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from . import store, engine, ingest, addons, llm
+from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(title="AXU Core")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 FRONT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "frontend")
 MAX_BYTES = 10 * 1024 * 1024
 
