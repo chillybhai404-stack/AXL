@@ -2,12 +2,15 @@
 import os, re, json, hmac, sqlite3
 from typing import List, Optional
 from fastapi import FastAPI, Depends, Header, HTTPException, UploadFile, File
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from . import store, engine, ingest, addons, llm
-from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(title="AXU Core")
+
+# Allow browser-based clients (including HTML apps on other domains) to call the API.
+# Credentials are disabled because API authentication uses an Authorization header.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
