@@ -1,0 +1,10 @@
+# AXL: plain-English rules. Upload examples/menu.json first (table name: menu)
+assistant: Shop Helper
+instructions "You are a friendly shop helper. Keep answers short."
+
+when asked about "price", "cost", "how much" -> find in menu -> "{name} costs Rs {price}."
+when asked about "cheap", "cheapest" -> sql "SELECT name, price FROM menu ORDER BY price LIMIT 2" -> "{name} - Rs {price}"
+when asked about "hello", "hi" -> say "Hi! Ask me about our menu."
+
+if unsure -> say "Sorry, I don't know that yet."
+fallback wikipedia
