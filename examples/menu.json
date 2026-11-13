@@ -1,1 +1,5 @@
-
+[
+  {"name": "Chilly Paneer", "price": 220, "category": "starter"},
+  {"name": "Butter Naan", "price": 40, "category": "bread"},
+  {"name": "Veg Biryani", "price": 180, "category": "main"}
+]
