@@ -1,1 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AXU Core</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main id="login">
+  <div class="card">
+    <div class="logo">AXU<span>Core</span></div>
+    <p class="muted">Sign in with your admin password.</p>
+    <input id="pw" type="password" placeholder="Admin password" autocomplete="current-password">
+    <button id="loginbtn" class="primary">Sign in</button>
+    <p id="loginmsg" class="err"></p>
+  </div>
+</main>
 
+<div id="app" hidden>
+  <header id="top">
+    <div class="logo">AXU<span>Core</span></div>
+    <nav id="nav">
+      <button data-view="studio" class="on">Studio</button>
+      <button data-view="keys">API Keys</button>
+      <button data-view="merger">Key Merger</button>
+      <button data-view="vault">Vault</button>
+    </nav>
+    <span class="spacer"></span>
+    <button id="logout" class="ghost sm">Sign out</button>
+  </header>
+
+  <section id="view-studio">
+    <aside id="side">
+      <div class="blk">
+        <div class="hd">Assistant</div>
+        <select id="asel"></select>
+        <div class="row"><input id="newname" placeholder="New assistant name"><button id="newbtn" class="sm">Create</button></div>
+        <button id="delassistant" class="link err">Delete this assistant</button>
+      </div>
+      <div class="blk">
+        <div class="hd">Files <button id="newfile" class="icon" title="New file">+</button></div>
+        <div id="files"></div>
+        <div id="newfilerow" hidden><input id="newfilename" placeholder="file name, e.g. products"></div>
+      </div>
+      <div class="blk">
+        <div class="hd">Data <button id="upbtn" class="icon" title="Upload JSON, CSV, DOCX, PDF, TXT">+</button></div>
+        <input id="file" type="file" hidden accept=".json,.csv,.docx,.pdf,.txt,.md">
+        <div id="tables"></div>
+        <div class="row"><input id="drive" placeholder="Google Drive link"><button id="drivebtn" class="sm">Import</button></div>
+        <div id="dmsg" class="small muted"></div>
+      </div>
+      <div class="blk">
+        <div class="hd">Add-ons</div>
+        <div id="addons"></div>
+      </div>
+    </aside>
+
+    <div id="main">
+      <div id="tabs"></div>
+      <div id="editor">
+        <div id="gutter"></div>
+        <div id="codewrap">
+          <pre id="hl" aria-hidden="true"></pre>
+          <textarea id="code" spellcheck="false" autocapitalize="off" autocomplete="off" autocorrect="off" wrap="off"></textarea>
+        </div>
+      </div>
+      <div id="panel">
+        <div id="ptabs">
+          <button data-p="console" class="on">Console</button>
+          <button data-p="problems">Problems <span id="pcount">0</span></button>
+        </div>
+        <div id="console">
+          <div id="clog"></div>
+          <div class="prompt"><span>&gt;</span><input id="tq" placeholder="Ask your assistant. Try: how much is veg biryani, or (x * 15 = 10)"></div>
+        </div>
+        <div id="problems" hidden></div>
+      </div>
+      <footer id="status">
+        <span id="st-save">Ready</span><span class="spacer"></span>
+        <span id="st-pos">Ln 1, Col 1</span><span>AXL</span>
+      </footer>
+    </div>
+  </section>
+
+  <section id="view-keys" class="page" hidden>
+    <div class="cols">
+      <div class="box">
+        <h2>Create API key</h2>
+        <p class="muted">Gives an app access to your assistants.</p>
+        <label>Label</label><input id="klabel" placeholder="e.g. mobile app">
+        <label>Allowed assistants (none selected = all)</label>
+        <select id="kscope" multiple size="5"></select>
+        <div id="klimits"></div>
+        <button id="kbtn" class="primary">Generate key</button>
+        <div id="kout" class="keybox" hidden></div>
+      </div>
+      <div class="box grow">
+        <h2>Keys</h2>
+        <div id="klist"></div>
+        <p class="muted small">Call <code>GET /v1/ask?q=...</code> with the header <code>Authorization: Bearer KEY</code>. Check what is left with <code>GET /v1/me</code>.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="view-merger" class="page" hidden>
+    <div class="cols">
+      <div class="box">
+        <h2>Key Merger</h2>
+        <p class="muted">Combine several AI provider keys from the Vault into one AXU key.</p>
+        <label>Keys to merge (order = priority)</label>
+        <div id="mlist"></div>
+        <label>Strategy</label>
+        <select id="mmode">
+          <option value="failover">Failover: try in order, skip failures</option>
+          <option value="rotate">Rotate: spread requests across keys</option>
+        </select>
+        <label>Label</label><input id="mlabel" placeholder="e.g. production AI key">
+        <div id="mlimits"></div>
+        <button id="mbtn" class="primary">Merge into one key</button>
+        <div id="mout" class="keybox" hidden></div>
+      </div>
+      <div class="box grow">
+        <h2>Merged keys</h2>
+        <div id="mkeys"></div>
+        <h3>Use it anywhere</h3>
+        <p class="muted small">The merged key speaks the OpenAI format, so any OpenAI SDK works. No streaming yet.</p>
+<pre>from openai import OpenAI
+client = OpenAI(base_url="https://YOUR-SERVER/v1",
+                api_key="axu_live_...")
+r = client.chat.completions.create(
+    model="any",   # ignored: the merger picks the provider
+    messages=[{"role": "user", "content": "Hello"}])
+print(r.choices[0].message.content)</pre>
+      </div>
+    </div>
+  </section>
+
+  <section id="view-vault" class="page" hidden>
+    <div class="cols">
+      <div class="box">
+        <h2>Add provider key</h2>
+        <p class="muted">Stored encrypted. Never shown again.</p>
+        <label>Name</label><input id="vname" placeholder="e.g. openai_main">
+        <label>Provider</label><select id="vprov"></select>
+        <label>API key</label><input id="vsecret" type="password" placeholder="Paste your key">
+        <label>Base URL</label><input id="vurl">
+        <label>Model</label><input id="vmodel">
+        <button id="vbtn" class="primary">Save to vault</button>
+        <p id="vmsg" class="small"></p>
+      </div>
+      <div class="box grow">
+        <h2>Vault</h2>
+        <div id="vlist"></div>
+        <p class="muted small">Use a key in AXL with: <code>fallback llm vault:NAME</code></p>
+      </div>
+    </div>
+  </section>
+</div>
+<script src="editor.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
