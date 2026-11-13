@@ -3,14 +3,15 @@ import os, re, json, hmac, sqlite3
 from typing import List, Optional
 from fastapi import FastAPI, Depends, Header, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from . import store, engine, ingest, addons, llm
 
 app = FastAPI(title="AXU Core")
 
-# Allow browser-based clients (including HTML apps on other domains) to call the API.
-# Credentials are disabled because API authentication uses an Authorization header.
+# Allow browser-based clients on other origins to call the API.
+# Credentials are disabled because API access uses explicit bearer keys.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -18,6 +19,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Declaring HTTPBearer makes FastAPI publish a real Bearer security scheme
+# in OpenAPI. Swagger UI will then attach the Authorization header correctly.
+bearer_scheme = HTTPBearer(auto_error=False, scheme_name="BearerAuth")
 FRONT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "frontend")
 MAX_BYTES = 10 * 1024 * 1024
 
@@ -286,7 +291,14 @@ def _bearer(authorization):
     return k
 
 
-def key_auth(authorization: str = Header("")):
+def key_auth(credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme)):
+    if credentials is None or credentials.scheme.lower() != "bearer":
+        raise HTTPException(
+            status_code=401,
+            detail="Send your key using the Authorize button as a Bearer token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    authorization = f"{credentials.scheme} {credentials.credentials}"
     k = _bearer(authorization)
     problem = store.check_limits(k)
     if problem:
@@ -355,8 +367,14 @@ def chat_completions(b: ChatIn, key=Depends(key_auth)):
 
 
 @app.get("/v1/me")
-def me(authorization: str = Header("")):
-    k = _bearer(authorization)
+def me(credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme)):
+    if credentials is None or credentials.scheme.lower() != "bearer":
+        raise HTTPException(
+            status_code=401,
+            detail="Send your key using the Authorize button as a Bearer token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    k = _bearer(f"{credentials.scheme} {credentials.credentials}")
     names = {r["id"]: r["name"] for r in store.rows("SELECT id, name FROM assistants")}
     ids = json.loads(k["assistants"])
     return {
