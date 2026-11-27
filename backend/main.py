@@ -1,10 +1,11 @@
 """AXU Core - AXL studio, add-ons, key merger, vault and master keys (FastAPI)."""
-import os, re, json, hmac, sqlite3
+import os, re, json, hmac, sqlite3, io, zipfile, time
 from typing import List, Optional
 from fastapi import FastAPI, Depends, Header, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from . import store, engine, ingest, addons, llm
 
@@ -45,6 +46,10 @@ class SourceIn(BaseModel):
     content: str = ""
 
 
+class RenameSourceIn(BaseModel):
+    name: str
+
+
 class DriveIn(BaseModel):
     url: str
     name: Optional[str] = None
@@ -82,9 +87,10 @@ class AskIn(BaseModel):
 class ChatIn(BaseModel):
     q: Optional[str] = None
     messages: Optional[List[dict]] = None
+    assistant: Optional[str] = None
     max_tokens: int = 500
     model: Optional[str] = None
-    stream: Optional[bool] = None
+    stream: Optional[bool] = False
 
 
 # ---------- helpers ----------
@@ -152,6 +158,24 @@ def put_source(aid: int, b: SourceIn):
     return {"errors": engine.validate(project_files(aid))}
 
 
+@app.patch("/api/assistants/{aid}/sources/{name}", dependencies=A)
+def rename_source(aid: int, name: str, b: RenameSourceIn):
+    get_assistant(aid)
+    if name == "main.axl":
+        raise HTTPException(400, "main.axl must keep its name")
+    current = {f["name"]: f["content"] for f in store.sources(aid)}
+    if name not in current:
+        raise HTTPException(404, "File not found")
+    new_name = source_name(b.name)
+    if new_name != name and new_name in current:
+        raise HTTPException(409, "A file with that name already exists")
+    content = current[name]
+    if new_name != name:
+        store.delete_source(aid, name)
+        store.put_source(aid, new_name, content)
+    return {"name": new_name, "errors": engine.validate(project_files(aid))}
+
+
 @app.delete("/api/assistants/{aid}/sources/{name}", dependencies=A)
 def del_source(aid: int, name: str):
     get_assistant(aid)
@@ -159,6 +183,25 @@ def del_source(aid: int, name: str):
         raise HTTPException(400, "main.axl can't be deleted")
     store.delete_source(aid, name)
     return {"errors": engine.validate(project_files(aid))}
+
+
+@app.get("/api/assistants/{aid}/export", dependencies=A)
+def export_assistant(aid: int):
+    assistant = get_assistant(aid)
+    sources = store.sources(aid)
+    buffer = io.BytesIO()
+    safe_name = re.sub(r"[^A-Za-z0-9_-]+", "_", assistant["name"]).strip("_") or "assistant"
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        for source in sources:
+            zf.writestr(f"{safe_name}/{source['name']}", source["content"])
+        manifest = {"assistant": assistant["name"], "exported_at": int(time.time()),
+                    "files": [source["name"] for source in sources],
+                    "note": "AXL source files only. Provider secrets and API keys are never included."}
+        zf.writestr(f"{safe_name}/project.json", json.dumps(manifest, indent=2))
+        zf.writestr(f"{safe_name}/README.txt", "AXL project export\n\nOpen main.axl in AXU Core.\nProvider secrets and generated API keys are not part of this export.\n")
+    buffer.seek(0)
+    return StreamingResponse(buffer, media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{safe_name}-axl-project.zip"'})
 
 
 @app.get("/api/assistants/{aid}/problems", dependencies=A)
@@ -248,8 +291,10 @@ def create_key(b: KeyIn):
         raise HTTPException(400, "One of the selected vault keys no longer exists")
     mode = b.bundle_mode if b.bundle_mode in ("failover", "rotate") else "failover"
     n = lambda v: max(0, v)
-    return {"key": store.new_key(b.label.strip(), b.assistants, n(b.daily_limit), n(b.monthly_limit), n(b.total_limit),
-                                 n(b.per_minute), n(b.expires_days), b.bundle, mode)}
+    raw = store.new_key(b.label.strip(), b.assistants, n(b.daily_limit), n(b.monthly_limit), n(b.total_limit),
+                        n(b.per_minute), n(b.expires_days), b.bundle, mode)
+    record = store.find_key(raw)
+    return {"key": raw, "id": record["id"] if record else None}
 
 
 @app.post("/api/keys/{kid}/revoke", dependencies=A)
@@ -270,9 +315,22 @@ def put_vault(b: VaultIn):
     name = "".join(c for c in b.name if c.isalnum() or c == "_")
     if not name or not b.secret:
         raise HTTPException(400, "Name (letters, numbers, _) and key are required")
-    provider = b.provider if b.provider in ("openai", "anthropic", "gemini") else "openai"
+    provider = b.provider if b.provider in ("openai", "anthropic", "gemini", "groq", "openrouter", "custom") else "openai"
     store.vault_set(name, b.secret, b.base_url.strip(), provider, b.model.strip())
     return {"ok": True, "name": name}
+
+
+@app.post("/api/vault/test", dependencies=A)
+def test_vault(b: VaultIn):
+    provider = b.provider if b.provider in ("openai", "anthropic", "gemini", "groq", "openrouter", "custom") else "openai"
+    if not b.secret.strip():
+        raise HTTPException(400, "Paste the provider API key first")
+    result = llm.test_connection({"name": b.name or "test", "provider": provider,
+                                 "secret": b.secret.strip(), "base_url": b.base_url.strip(),
+                                 "model": b.model.strip()})
+    if not result["ok"]:
+        raise HTTPException(502, result["error"])
+    return result
 
 
 @app.delete("/api/vault/{name}", dependencies=A)
@@ -307,6 +365,16 @@ def key_auth(credentials: Optional[HTTPAuthorizationCredentials] = Depends(beare
     return k
 
 
+def metadata_key_auth(credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme)):
+    """Authenticate metadata reads without consuming a generation quota."""
+    if credentials is None or credentials.scheme.lower() != "bearer":
+        raise HTTPException(401, "Send your key using Authorization: Bearer <key>", headers={"WWW-Authenticate": "Bearer"})
+    k = _bearer(f"{credentials.scheme} {credentials.credentials}")
+    if k["expires_at"] and time.time() > k["expires_at"]:
+        raise HTTPException(401, "This key has expired")
+    return k
+
+
 def resolve(key, ref):
     allowed = json.loads(key["assistants"])
     pool = [r for r in store.rows("SELECT id, name FROM assistants") if not allowed or r["id"] in allowed]
@@ -334,24 +402,49 @@ def ask_get(q: str, assistant: Optional[str] = None, key=Depends(key_auth)):
 
 
 def _chat(key, b):
-    names = json.loads(key["bundle"] or "[]")
-    if not names:
-        raise HTTPException(403, "This key has no merged AI keys. Create one in Key Merger.")
-    entries = []
-    for n in names:
-        try:
-            entries.append(store.vault_entry(n))
-        except KeyError:
-            pass
-    msgs = [{"role": str(m.get("role", "user")), "content": str(m.get("content", ""))} for m in (b.messages or [])]
+    if b.stream:
+        raise HTTPException(400, "Streaming is not supported yet. Send stream=false or omit stream.")
+
+    # Normalise OpenAI-style messages. Most website integrations send a history
+    # array; AXL assistants are rule-based, so they answer the latest user turn.
+    msgs = []
+    for m in (b.messages or []):
+        if not isinstance(m, dict):
+            continue
+        role = str(m.get("role", "user")).lower()
+        content = m.get("content", "")
+        if isinstance(content, list):
+            content = " ".join(str(part.get("text", "")) for part in content if isinstance(part, dict))
+        if isinstance(content, (str, int, float)) and str(content).strip():
+            msgs.append({"role": role, "content": str(content)})
     if not msgs and b.q:
         msgs = [{"role": "user", "content": b.q}]
     if not msgs:
-        raise HTTPException(400, "Send 'q' or 'messages'")
-    try:
-        return llm.route(key["id"], entries, msgs, key["bundle_mode"], min(max(b.max_tokens, 1), 2000))
-    except RuntimeError as e:
-        raise HTTPException(502, str(e))
+        raise HTTPException(400, "Send 'q' or a non-empty 'messages' array")
+
+    names = json.loads(key["bundle"] or "[]")
+    if names:
+        entries = []
+        for n in names:
+            try:
+                entries.append(store.vault_entry(n))
+            except KeyError:
+                continue
+        try:
+            return llm.route(key["id"], entries, msgs, key["bundle_mode"], min(max(b.max_tokens, 1), 2000))
+        except RuntimeError as e:
+            raise HTTPException(502, str(e))
+
+    # Non-merged API keys expose the AXL assistant runtime using the same
+    # OpenAI-compatible endpoint, so the generated key works in website SDKs.
+    user_turns = [m["content"] for m in msgs if m["role"] == "user"]
+    question = user_turns[-1] if user_turns else msgs[-1]["content"]
+    assistant_ref = b.assistant
+    if not assistant_ref and b.model and b.model.lower() not in ("axl", "axl-assistant", "any"):
+        assistant_ref = b.model
+    aid = resolve(key, assistant_ref)
+    result = engine.ask(aid, question[:500])
+    return {"answer": result.get("answer", ""), "provider": "AXL", "source": result.get("source", "axl")}
 
 
 @app.post("/v1/chat")
@@ -359,11 +452,34 @@ def chat(b: ChatIn, key=Depends(key_auth)):
     return _chat(key, b)
 
 
+@app.get("/v1/chat")
+def chat_get(q: str, assistant: Optional[str] = None, key=Depends(key_auth)):
+    """Convenience GET route for quick browser/API-key smoke tests."""
+    return _chat(key, ChatIn(q=q, assistant=assistant))
+
+
 @app.post("/v1/chat/completions")
 def chat_completions(b: ChatIn, key=Depends(key_auth)):
     r = _chat(key, b)
-    return {"object": "chat.completion", "model": r["provider"],
-            "choices": [{"index": 0, "message": {"role": "assistant", "content": r["answer"]}, "finish_reason": "stop"}]}
+    return {"id": "chatcmpl-axu", "object": "chat.completion", "created": int(time.time()),
+            "model": b.model or r.get("provider", "axl-assistant"),
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": r["answer"]}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}}
+
+
+@app.get("/v1/models")
+def models(key=Depends(metadata_key_auth)):
+    bundle = json.loads(key["bundle"] or "[]")
+    if bundle:
+        ids = ["axu-merged"]
+    else:
+        allowed = json.loads(key["assistants"])
+        rows = store.rows("SELECT id, name FROM assistants ORDER BY id")
+        ids = [r["name"] for r in rows if not allowed or r["id"] in allowed]
+        if not ids:
+            ids = ["axl-assistant"]
+    return {"object": "list", "data": [{"id": model_id, "object": "model", "created": 0,
+                                         "owned_by": "axu"} for model_id in ids]}
 
 
 @app.get("/v1/me")
@@ -387,6 +503,14 @@ def me(credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_sche
     }
 
 
+@app.get("/v1")
+def api_info():
+    return {"name": "AXU Core API", "status": "ok", "endpoints": {
+        "chat": "POST /v1/chat", "openai_compatible": "POST /v1/chat/completions",
+        "models": "GET /v1/models", "assistant": "GET or POST /v1/ask", "account": "GET /v1/me"}}
+
+
+@app.get("/v1/health")
 @app.get("/health")
 def health():
     return {"ok": True}

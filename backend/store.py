@@ -15,8 +15,8 @@ def _persist(name, maker):
         return f.read().strip()
 
 
-if os.environ.get("ANSAR"):
-    ADMIN_PASSWORD = os.environ["ANSAR"]
+if os.environ.get("ADMIN_PASSWORD") or os.environ.get("ANSAR"):
+    ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD") or os.environ["ANSAR"]
 else:
     ADMIN_PASSWORD = _persist("admin_password.txt", lambda: secrets.token_urlsafe(12))
     print(f"[AXU] Admin password: {ADMIN_PASSWORD}  (set ADMIN_PASSWORD env var to choose your own)")
