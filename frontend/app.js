@@ -4,14 +4,21 @@ const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "
 let pw = sessionStorage.getItem("axu_pw") || "";
 let list = [], cur = null, files = {}, tabsOpen = [], active = null, dirty = new Set(), problems = [];
 let catalog = [], vault = [], ed = null, saveTimer = null, booted = false;
+let fileFilter = "";
 
 async function api(path, opt = {}) {
   const h = {"x-admin-password": pw};
   let body = opt.body;
   if (body && !(body instanceof FormData)) { h["content-type"] = "application/json"; body = JSON.stringify(body); }
-  const r = await fetch(path, {method: opt.method || "GET", headers: h, body});
-  const j = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(typeof j.detail === "string" ? j.detail : "Something went wrong (" + r.status + ")");
+  let r;
+  try { r = await fetch(path, {method: opt.method || "GET", headers: h, body}); }
+  catch (e) { throw new Error("Could not reach AXU server. Check the deployed URL, internet connection and server status."); }
+  const raw = await r.text();
+  let j = {}; try { j = raw ? JSON.parse(raw) : {}; } catch { j = {detail: raw.slice(0, 240)}; }
+  if (!r.ok) {
+    const detail = typeof j.detail === "string" ? j.detail : (j.message || j.error || "");
+    throw new Error(detail || `Request failed (${r.status} ${r.statusText})`);
+  }
   return j;
 }
 function status(t, bad) { const e = $("#st-save"); e.textContent = t; e.className = bad ? "err" : ""; }
@@ -37,6 +44,17 @@ $$("#ptabs button").forEach(b => b.onclick = () => {
   $$("#ptabs button").forEach(x => x.classList.toggle("on", x === b));
   $("#console").hidden = b.dataset.p !== "console"; $("#problems").hidden = b.dataset.p !== "problems";
 });
+
+// Touch-first Studio controls (Acode-style file drawer, editor and console dock).
+function closeFilesDrawer() { document.body.classList.remove("files-open"); $("#filescrim").hidden = true; }
+function setMobileDock(active) { ["files", "editor", "console"].forEach(n => $("#dock-" + n)?.classList.toggle("on", n === active)); }
+function showEditor() { closeFilesDrawer(); $("#main").classList.remove("console-open"); setMobileDock("editor"); $("#code").focus({preventScroll: true}); }
+function showConsole() { closeFilesDrawer(); $("#main").classList.add("console-open"); setMobileDock("console"); }
+function showFiles() { document.body.classList.add("files-open"); $("#filescrim").hidden = false; setMobileDock("files"); }
+["#mobile-files", "#dock-files"].forEach(sel => $(sel).onclick = showFiles);
+["#mobile-editor", "#dock-editor"].forEach(sel => $(sel).onclick = showEditor);
+["#mobile-console", "#dock-console"].forEach(sel => $(sel).onclick = showConsole);
+$("#filescrim").onclick = closeFilesDrawer;
 
 function boot() {
   booted = true;
@@ -115,10 +133,30 @@ function closeTab(n) {
 
 // files
 function renderFiles() {
-  $("#files").innerHTML = Object.keys(files).sort().map(n =>
-    `<div class="fitem ${n === active ? "on" : ""}" data-open="${esc(n)}"><span>${esc(n)}</span>${n === "main.axl" ? "" : `<button class="x" data-delfile="${esc(n)}" title="Delete">&times;</button>`}</div>`).join("");
+  const names = Object.keys(files).sort().filter(n => n.toLowerCase().includes(fileFilter));
+  $("#files").innerHTML = names.map(n =>
+    `<div class="fitem ${n === active ? "on" : ""}" data-open="${esc(n)}"><span title="${esc(n)}">${esc(n)}</span>${n === "main.axl" ? "" : `<button class="x" data-renamefile="${esc(n)}" title="Rename file">✎</button><button class="x" data-delfile="${esc(n)}" title="Delete file">&times;</button>`}</div>`).join("") || '<div class="pad small muted">No matching files.</div>';
 }
+$("#filesearch").oninput = e => { fileFilter = e.target.value.trim().toLowerCase(); renderFiles(); };
 $("#files").onclick = async e => {
+  const rename = e.target.dataset.renamefile;
+  if (rename) {
+    const proposed = prompt("Rename AXL file (without needing to type .axl):", rename.replace(/\.axl$/i, ""));
+    if (!proposed || !proposed.trim()) return;
+    const target = proposed.trim().replace(/\.axl$/i, "") + ".axl";
+    if (target === rename) return;
+    if (!/^[A-Za-z0-9_-]{1,40}\.axl$/.test(target)) return status("File names can use letters, numbers, - and _", true);
+    try {
+      if (dirty.has(rename)) await saveFile(rename);
+      if (dirty.has(rename)) return status("Save failed. Fix the save error before renaming this file.", true);
+      const r = await api(`/api/assistants/${cur.id}/sources/${encodeURIComponent(rename)}`, {method: "PATCH", body: {name: target}});
+      files[target] = files[rename]; delete files[rename]; dirty.delete(rename);
+      tabsOpen = tabsOpen.map(n => n === rename ? target : n);
+      if (active === rename) active = target;
+      problems = r.errors; if (active) ed.setValue(files[active]); renderAll(); status(`Renamed to ${target}`);
+    } catch (err) { status(err.message, true); }
+    return;
+  }
   const d = e.target.dataset.delfile;
   if (d) {
     if (!confirm(`Delete ${d}?`)) return;
@@ -151,6 +189,44 @@ async function saveFile(n) {
     status(problems.length ? `Saved - ${problems.length} problem${problems.length > 1 ? "s" : ""}` : "Saved", problems.length > 0);
   } catch (e) { status(e.message, true); }
 }
+
+// Export actions. The current file is downloaded as plain .axl; project export
+// is a ZIP produced by the backend and deliberately excludes API secrets.
+async function saveAll() {
+  if (active) files[active] = ed.getValue();
+  const pending = [...dirty];
+  for (const name of pending) await saveFile(name);
+  if (dirty.size) throw new Error("Some files could not be saved. Check the status message and try again.");
+}
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob), a = document.createElement("a");
+  a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1500);
+}
+$("#downloadfile").onclick = () => {
+  if (!active) return status("Open a file first", true);
+  files[active] = ed.getValue();
+  downloadBlob(new Blob([files[active]], {type: "text/plain;charset=utf-8"}), active);
+};
+async function exportProject() {
+  if (!cur) return status("Choose an assistant first", true);
+  try {
+    await saveAll(); status("Preparing project export…");
+    const r = await fetch(`/api/assistants/${cur.id}/export`, {headers: {"x-admin-password": pw}});
+    if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j.detail || `Export failed (${r.status})`); }
+    const blob = await r.blob();
+    const cd = r.headers.get("content-disposition") || "";
+    const match = /filename="?([^";]+)"?/i.exec(cd);
+    downloadBlob(blob, match?.[1] || `${cur.name.replace(/[^a-z0-9_-]/gi, "_")}-axl-project.zip`);
+    status("Project exported");
+  } catch (e) { status(e.message, true); }
+}
+$("#exportproject").onclick = exportProject;
+$("#dock-export").onclick = exportProject;
+async function saveToolbar() { try { await saveAll(); status("All files saved"); } catch (e) { status(e.message, true); } }
+$("#saveall").onclick = saveToolbar;
+$("#dock-save").onclick = saveToolbar;
+$("#dock-export").title = "Export the entire AXL project as ZIP";
 
 // problems
 function renderProblems() {
@@ -257,30 +333,53 @@ async function loadKeys() {
   $("#klist").innerHTML = ks.map(keyRow).join("") || '<div class="muted">No keys yet.</div>';
   $("#mkeys").innerHTML = ks.filter(k => k.bundle.length).map(keyRow).join("") || '<div class="muted">No merged keys yet.</div>';
 }
-function showKey(sel, key) {
-  const b = $(sel); b.hidden = false;
-  b.innerHTML = '<div class="muted small">Copy it now. It is shown only once.</div><code></code>';
+function showKey(sel, key, assistant = "") {
+  const b = $(sel); b.hidden = false; b.dataset.key = key; b.dataset.assistant = assistant || "";
+  b.innerHTML = '<div class="muted small">Copy it now. This secret is shown only once.</div><div class="key-reveal"><code></code></div><div class="key-actions"><button class="sm" data-copy-issued>Copy key</button><button class="sm primary" data-test-issued>Test this key</button></div><div class="key-test-result small muted" aria-live="polite"></div>';
   b.querySelector("code").textContent = key;
 }
+async function testIssuedKey(container) {
+  const output = container.querySelector(".key-test-result"), key = container.dataset.key || "", assistant = container.dataset.assistant || "";
+  output.className = "key-test-result small muted"; output.textContent = "Testing /v1/chat/completions…";
+  try {
+    const body = {model: "axl-assistant", messages: [{role: "user", content: "Reply with exactly: AXL API key working"}]};
+    if (assistant) body.assistant = assistant;
+    const response = await fetch("/v1/chat/completions", {method: "POST", headers: {"Authorization": "Bearer " + key, "Content-Type": "application/json"}, body: JSON.stringify(body)});
+    const raw = await response.text(); let data = {}; try { data = raw ? JSON.parse(raw) : {}; } catch { data = {detail: raw.slice(0, 240)}; }
+    if (!response.ok) throw new Error(data.detail || `HTTP ${response.status} ${response.statusText}`);
+    const answer = data.choices?.[0]?.message?.content || "Connected, but the server returned no chat text.";
+    output.className = "key-test-result small ok"; output.textContent = "Connection successful: " + answer;
+  } catch (e) { output.className = "key-test-result small err"; output.textContent = "Test failed: " + e.message; }
+}
 document.addEventListener("click", async e => {
+  if (e.target.closest("[data-copy-issued]")) {
+    const box = e.target.closest(".keybox"), key = box?.dataset.key || "";
+    try { await navigator.clipboard.writeText(key); e.target.textContent = "Copied"; }
+    catch { const area = document.createElement("textarea"); area.value = key; document.body.appendChild(area); area.select(); document.execCommand("copy"); area.remove(); e.target.textContent = "Copied"; }
+    return;
+  }
+  if (e.target.closest("[data-test-issued]")) { const box = e.target.closest(".keybox"); if (box) await testIssuedKey(box); return; }
   const id = e.target.dataset.rev;
   if (id && confirm("Revoke this key?")) { await api(`/api/keys/${id}/revoke`, {method: "POST"}); loadKeys(); }
 });
 $("#kbtn").onclick = async () => {
   try {
-    const r = await api("/api/keys", {method: "POST", body: {label: $("#klabel").value, assistants: [...$("#kscope").selectedOptions].map(o => +o.value), ...readLimits("k")}});
-    showKey("#kout", r.key); loadKeys();
+    const selected = [...$("#kscope").selectedOptions];
+    const assistantIds = selected.map(o => +o.value);
+    const assistantName = (selected[0] || $("#kscope").options[0])?.textContent || "";
+    const r = await api("/api/keys", {method: "POST", body: {label: $("#klabel").value, assistants: assistantIds, ...readLimits("k")}});
+    showKey("#kout", r.key, assistantName); loadKeys();
   } catch (e) { alert(e.message); }
 };
 
 // ---------- vault ----------
 const PROV = {
   openai: ["openai", "https://api.openai.com/v1", "gpt-4o-mini", "OpenAI"],
-  anthropic: ["anthropic", "https://api.anthropic.com", "claude-haiku-5-5", "Anthropic"],
-  gemini: ["gemini", "https://generativelanguage.googleapis.com", "gemini-2.0-flash", "Google Gemini"],
-  groq: ["openai", "https://api.groq.com/openai/v1", "llama-3.1-8b-instant", "Groq"],
-  openrouter: ["openai", "https://openrouter.ai/api/v1", "openai/gpt-4o-mini", "OpenRouter"],
-  custom: ["openai", "", "", "Custom (OpenAI-compatible)"],
+  anthropic: ["anthropic", "https://api.anthropic.com", "claude-haiku-4-5-20251001", "Anthropic"],
+  gemini: ["gemini", "https://generativelanguage.googleapis.com", "gemini-3.8-flash", "Google Gemini"],
+  groq: ["groq", "https://api.groq.com/openai/v1", "openai/gpt-oss-20b", "Groq"],
+  openrouter: ["openrouter", "https://openrouter.ai/api/v1", "openai/gpt-4o-mini", "OpenRouter"],
+  custom: ["custom", "", "", "Custom (OpenAI-compatible)"],
 };
 function provDefaults() { const p = PROV[$("#vprov").value]; $("#vurl").value = p[1]; $("#vmodel").value = p[2]; }
 $("#vprov").onchange = provDefaults;
@@ -290,6 +389,16 @@ async function loadVault() {
     `<div class="item"><span><b>${esc(v.name)}</b><br><small class="muted">${esc(v.provider)} / ${esc(v.model || "default model")}</small></span><button class="sm" data-vdel="${esc(v.name)}">Delete</button></div>`).join("") || '<div class="muted">Vault is empty.</div>';
   renderMerge();
 }
+$("#vtest").onclick = async () => {
+  const msg = $("#vmsg");
+  if (!$("#vsecret").value.trim()) { msg.className = "small err"; msg.textContent = "Paste the provider API key first."; return; }
+  msg.className = "small muted"; msg.textContent = "Testing provider connection…";
+  try {
+    const r = await api("/api/vault/test", {method: "POST", body: {name: $("#vname").value || "provider_test", secret: $("#vsecret").value,
+      provider: PROV[$("#vprov").value][0], base_url: $("#vurl").value, model: $("#vmodel").value}});
+    msg.className = "small ok"; msg.textContent = `Connected to ${r.provider} (${r.model}): ${r.answer}`;
+  } catch (e) { msg.className = "small err"; msg.textContent = "Connection failed: " + e.message; }
+};
 $("#vbtn").onclick = async () => {
   try {
     const r = await api("/api/vault", {method: "PUT", body: {name: $("#vname").value, secret: $("#vsecret").value, provider: PROV[$("#vprov").value][0], base_url: $("#vurl").value, model: $("#vmodel").value}});

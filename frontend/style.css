@@ -96,3 +96,64 @@ pre{background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:
   #main{min-height:640px}
   .cols{flex-direction:column;padding:12px}.box{width:100%}
 }
+
+/* Studio refresh: visible actions, project navigation and touch-first mobile layout */
+#view-studio{grid-template-rows:48px minmax(0,1fr)}
+#studio-toolbar{grid-column:1/-1;display:flex;align-items:center;gap:7px;padding:6px 10px;background:#101114;border-bottom:1px solid var(--line);overflow-x:auto;scrollbar-width:none}
+#studio-toolbar::-webkit-scrollbar{display:none}
+.toolbtn{display:inline-flex;align-items:center;justify-content:center;gap:6px;white-space:nowrap;padding:7px 10px;border-radius:7px;font-size:12px;background:#181a1e;color:var(--fg);border:1px solid #2a2c31}
+.toolbtn:hover{border-color:var(--acc);color:#fff}
+.toolbtn.export{background:var(--acc);border-color:var(--acc);color:#fff;font-weight:700}
+.filesearch{margin:0 0 8px;padding:7px 9px;font-size:12px;border-radius:6px}
+#files{display:grid;gap:2px}
+.fitem{min-height:34px}
+.fitem span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.vault-actions{display:flex;gap:8px;margin-top:12px}
+.vault-actions button{flex:1;margin:0}
+.api-example{white-space:pre;max-width:100%;font-size:11px;line-height:1.55}
+.keybox .key-reveal{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px}
+.keybox .key-reveal code{flex:1;min-width:180px;overflow-wrap:anywhere}
+.keybox .key-actions{display:flex;gap:7px;flex-wrap:wrap;margin-top:10px}
+.keybox .key-test-result{margin-top:9px;line-height:1.5;overflow-wrap:anywhere}
+#mobile-dock{display:none}
+#filescrim{display:none}
+
+@media(max-width:860px){
+  #app{height:100svh;overflow:hidden}
+  #top{height:48px;min-height:48px;padding:0 9px;gap:8px}
+  #top .logo{font-size:13px;white-space:nowrap}
+  #nav{min-width:0;overflow-x:auto;flex:1;scrollbar-width:none}
+  #nav::-webkit-scrollbar{display:none}
+  #nav button{padding:7px 9px;font-size:11px;white-space:nowrap}
+  #logout{padding:5px 7px}
+  #view-studio{height:calc(100svh - 48px);min-height:0;display:flex;flex-direction:column;overflow:hidden}
+  #studio-toolbar{height:45px;min-height:45px;flex:none;padding:5px 7px;gap:5px}
+  .toolbtn{padding:7px 9px;font-size:11px}
+  .toolbtn span{display:inline}
+  #side{position:fixed;top:48px;bottom:58px;left:0;width:min(86vw,330px);max-height:none;height:auto;overflow-y:auto;z-index:51;background:var(--panel);border-right:1px solid var(--line);box-shadow:18px 0 50px rgba(0,0,0,.35);transform:translateX(-105%);transition:transform .2s ease;padding-bottom:18px}
+  body.files-open #side{transform:translateX(0)}
+  #filescrim{position:fixed;display:block;top:48px;left:0;right:0;bottom:58px;background:rgba(0,0,0,.48);z-index:50}
+  #main{flex:1;min-height:0;height:auto;width:100%;overflow:hidden}
+  #tabs{min-height:35px;height:35px}
+  #editor{flex:1;min-height:0}
+  #panel{display:none;height:38%;min-height:150px;max-height:42%;flex:none}
+  #main.console-open #panel{display:flex}
+  #main.console-open #editor{min-height:100px}
+  #status{height:22px;min-height:22px;font-size:10px;gap:8px}
+  #mobile-dock{display:flex;flex:none;height:54px;min-height:54px;align-items:stretch;justify-content:space-around;gap:4px;padding:5px 6px calc(5px + env(safe-area-inset-bottom));background:#101114;border-top:1px solid var(--line);z-index:45}
+  #mobile-dock button{flex:1;min-width:0;padding:5px 2px;background:transparent;border:0;border-radius:7px;color:var(--mut);font-size:11px;font-weight:600}
+  #mobile-dock button.on{background:#1c2938;color:#9ecaff}
+  .cols{padding:10px;gap:12px}
+  .box{padding:15px}
+  .grid{grid-template-columns:1fr 1fr}
+}
+@media(max-width:420px){
+  #nav button{padding:7px 7px;font-size:10px}
+  #top .logo{font-size:12px}
+  #logout{font-size:10px}
+  .toolbtn{padding:7px 8px;font-size:10px}
+  #studio-toolbar .toolbtn.export span{display:inline}
+  #mobile-dock button{font-size:10px}
+  #gutter{width:38px;font-size:11px}
+  #hl,#code{font-size:12px;padding-left:9px;padding-right:9px}
+}

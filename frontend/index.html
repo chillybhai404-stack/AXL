@@ -31,6 +31,15 @@
   </header>
 
   <section id="view-studio">
+    <div id="studio-toolbar">
+      <button id="mobile-files" class="toolbtn">☰ <span>Files</span></button>
+      <button id="mobile-editor" class="toolbtn">▤ <span>Editor</span></button>
+      <button id="saveall" class="toolbtn">↥ <span>Save</span></button>
+      <button id="downloadfile" class="toolbtn">↓ <span>Export file</span></button>
+      <button id="exportproject" class="toolbtn export">⇩ <span>Export project ZIP</span></button>
+      <button id="mobile-console" class="toolbtn">▣ <span>Console</span></button>
+    </div>
+    <div id="filescrim" hidden></div>
     <aside id="side">
       <div class="blk">
         <div class="hd">Assistant</div>
@@ -39,7 +48,8 @@
         <button id="delassistant" class="link err">Delete this assistant</button>
       </div>
       <div class="blk">
-        <div class="hd">Files <button id="newfile" class="icon" title="New file">+</button></div>
+        <div class="hd">Project files <button id="newfile" class="icon" title="New AXL file">+</button></div>
+        <input id="filesearch" class="filesearch" placeholder="Search files…" autocomplete="off">
         <div id="files"></div>
         <div id="newfilerow" hidden><input id="newfilename" placeholder="file name, e.g. products"></div>
       </div>
@@ -81,6 +91,13 @@
         <span id="st-pos">Ln 1, Col 1</span><span>AXL</span>
       </footer>
     </div>
+    <div id="mobile-dock">
+      <button id="dock-files">Files</button>
+      <button id="dock-editor" class="on">Editor</button>
+      <button id="dock-console">Console</button>
+      <button id="dock-save">Save</button>
+      <button id="dock-export">Export</button>
+    </div>
   </section>
 
   <section id="view-keys" class="page" hidden>
@@ -98,7 +115,19 @@
       <div class="box grow">
         <h2>Keys</h2>
         <div id="klist"></div>
-        <p class="muted small">Call <code>GET /v1/ask?q=...</code> with the header <code>Authorization: Bearer KEY</code>. Check what is left with <code>GET /v1/me</code>.</p>
+        <p class="muted small">Use the same key with <code>POST /v1/chat/completions</code> from another website. AXL assistant keys and merged provider keys are both supported. Check usage with <code>GET /v1/me</code>.</p>
+        <pre class="api-example">fetch("https://YOUR-SERVER/v1/chat/completions", {
+  method: "POST",
+  headers: {
+    "Authorization": "Bearer axu_live_YOUR_KEY",
+    "Content-Type": "application/json"
+  },
+  body: JSON.stringify({
+    model: "YOUR_ASSISTANT_NAME",
+    messages: [{ role: "user", content: "Hello" }]
+  })
+}).then(r => r.json()).then(console.log);</pre>
+        <p class="muted small">Set <code>model</code> to the assistant name. A single-assistant key can use <code>axl-assistant</code>. For a public website, call AXL from your website's server rather than exposing a private API key in browser JavaScript.</p>
       </div>
     </div>
   </section>
@@ -146,7 +175,7 @@ print(r.choices[0].message.content)</pre>
         <label>API key</label><input id="vsecret" type="password" placeholder="Paste your key">
         <label>Base URL</label><input id="vurl">
         <label>Model</label><input id="vmodel">
-        <button id="vbtn" class="primary">Save to vault</button>
+        <div class="vault-actions"><button id="vtest" class="ghost">Test connection</button><button id="vbtn" class="primary">Save to vault</button></div>
         <p id="vmsg" class="small"></p>
       </div>
       <div class="box grow">
