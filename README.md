@@ -1,105 +1,136 @@
-# AXU Core
+# AXU Core / AXL Studio
 
-A professional workspace for building assistants without an LLM bill.
+AXU Core is a small FastAPI service with a browser-based AXL editor, assistant runtime, encrypted provider vault and an API-key gateway.
 
-- **Studio**: a VS Code style editor for the AXL language (syntax colours, line numbers, auto-closing quotes and brackets, live error checking, multiple files).
-- **Add-ons**: one click gives an assistant Wikipedia, weather, dictionary, countries, currency, books, jokes and math.
-- **Key Merger**: put several AI provider keys (OpenAI, Anthropic, Gemini, Groq, OpenRouter...) into one AXU key, with failover or rotation. It speaks the OpenAI format.
-- **Vault**: provider keys stored encrypted. Callers never see them.
-- **API keys**: per-app keys with limits per day, month, total, minute, and an expiry.
-- **Data**: upload JSON, CSV, DOCX, PDF, TXT, MD or a shared Google Drive link.
+## What is included
 
-Backend: FastAPI + SQLite. Frontend: plain HTML/CSS/JS, designed for desktop browsers.
+- **Studio:** multi-file `.axl` editor, syntax highlighting, line numbers, auto-pairs, autosave, console and problem list.
+- **Mobile Studio:** touch-sized file drawer, editor/console dock, file search, save controls and visible file/project export actions.
+- **Project files:** create and delete AXL files, download the current file, or export all AXL source files as a ZIP. Exports do not contain API keys or provider secrets.
+- **Data:** import JSON, CSV, DOCX, PDF, TXT, MD and a shared Google Drive link into an assistant's local SQLite database.
+- **Add-ons:** one-click add-ons for Wikipedia, weather, dictionary, countries, currency, books, jokes and math.
+- **API keys:** separate keys for each external website/app, with assistant scope, usage limits, expiry and revocation.
+- **Provider Vault:** OpenAI-compatible, Anthropic and Gemini keys are encrypted at rest. Use **Test connection** before saving.
+- **Key Merger:** combine provider keys with failover or rotation and receive one `axu_live_...` gateway key.
 
-## Run it
+## Run locally
 
-```
+```bash
 pip install -r requirements.txt
 python run.py
 ```
-Open http://127.0.0.1:8000. The admin password is printed on first start and saved in `data/admin_password.txt`. Choose your own with the `ADMIN_PASSWORD` environment variable.
 
-## The AXL language
+Open `http://127.0.0.1:8000`. On first start, a random admin password is printed and stored in `data/admin_password.txt`. Set `ADMIN_PASSWORD` to choose one. `ANSAR` remains accepted as a backward-compatible environment variable.
 
-Files end in `.axl`. `main.axl` is your assistant; other files are libraries it can import.
+For production, set a strong `ADMIN_PASSWORD`, set a persistent `AXU_SECRET` Fernet key, keep `AXU_DATA` on a persistent disk and serve over HTTPS. Do not replace `AXU_SECRET` after saving provider keys: the existing encrypted vault values will no longer decrypt.
 
+## API keys for another website
+
+Generate a key in **API Keys** for an AXL assistant, or in **Key Merger** for a provider-backed key. A generated key is shown once. Copy it and use the same gateway endpoint from another server or website backend.
+
+### OpenAI-compatible endpoint (recommended)
+
+`POST https://YOUR-SERVER/v1/chat/completions`
+
+Headers:
+
+```http
+Authorization: Bearer axu_live_YOUR_KEY
+Content-Type: application/json
 ```
+
+Body:
+
+```json
+{
+  "model": "Shop Helper",
+  "messages": [
+    {"role": "user", "content": "Hello"}
+  ]
+}
+```
+
+For an AXL key, `model` can be the assistant name shown by `GET /v1/models`. If the key can access more than one assistant, choose the assistant by setting `model` to its name, or include the custom field `assistant` with its name or ID:
+
+```json
+{
+  "model": "axl-assistant",
+  "assistant": "Shop Helper",
+  "messages": [{"role": "user", "content": "Hello"}]
+}
+```
+
+A normal assistant key invokes the AXL rule engine. A merged key invokes the provider bundle stored in the Vault. Both return an OpenAI Chat Completions-shaped response. The `model` value is accepted for SDK compatibility; the merged key chooses the actual provider model from its Vault settings.
+
+### Browser JavaScript example
+
+```js
+const response = await fetch("https://YOUR-SERVER/v1/chat/completions", {
+  method: "POST",
+  headers: {
+    "Authorization": "Bearer axu_live_YOUR_KEY",
+    "Content-Type": "application/json"
+  },
+  body: JSON.stringify({
+    model: "Shop Helper",
+    messages: [{ role: "user", content: "Hello" }]
+  })
+});
+
+if (!response.ok) throw new Error(await response.text());
+const data = await response.json();
+console.log(data.choices[0].message.content);
+```
+
+**Security:** a key placed in browser JavaScript is visible to visitors. For a public website, keep the AXL key on your own server and call AXL from your backend. CORS is enabled for cross-origin requests; credentials/cookies are not used.
+
+### Other public endpoints
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| `POST` | `/v1/chat/completions` | OpenAI-compatible chat response |
+| `POST` | `/v1/chat` | Simple chat JSON (`q` or `messages`) |
+| `GET` | `/v1/chat?q=...` | Quick browser smoke test |
+| `GET` / `POST` | `/v1/ask` | Ask an AXL assistant directly |
+| `GET` | `/v1/models` | Models visible to this key |
+| `GET` | `/v1/me` | Key scope, limits and usage |
+| `GET` | `/v1` | API endpoint overview |
+| `GET` | `/v1/health` | Health check |
+
+The OpenAI-compatible creation endpoint is **POST**, not GET. The editor's new **Test this key** button sends a POST automatically. Streaming is not implemented; send `stream: false` or omit it.
+
+## Provider Vault setup
+
+For OpenAI-compatible providers (OpenAI, Groq, OpenRouter and custom compatible services), set the Base URL to the API root, for example `https://api.groq.com/openai/v1`, or the full `/chat/completions` URL. Do not enter a `/models` URL. For Anthropic, use `https://api.anthropic.com`; for Gemini, use `https://generativelanguage.googleapis.com`. The Vault preserves the selected provider label while sending OpenAI-compatible providers through the shared adapter.
+
+The Vault now has a **Test connection** action. It sends a tiny prompt and displays provider HTTP/connectivity errors before you save the key. This helps distinguish an invalid API key, invalid model, malformed Base URL, provider outage and a network connection failure.
+
+Default model suggestions in the provider form are editable. Provider model availability changes over time; check your provider's current model catalogue when a model returns a 400 or 404.
+
+## AXL language quick example
+
+```axl
 # main.axl
 assistant: Shop Helper
-import library                # loads library.axl (its tables, lets and rules)
-use math                      # add-ons: math weather dictionary countries currency books joke wikipedia
-use wikipedia
+import library
+use math
 
-when asked about "price", "cost" -> find in menu -> "{name} costs Rs {price}. With tax: Rs {price * (1 + tax):2}."
-when asked about "cheap"         -> sql "SELECT name, price FROM menu ORDER BY price LIMIT 2" -> "{name} - Rs {price}"
-when asked about "premium"       -> find in menu where price > 150 -> "{name} is premium"
-when asked about "refund"        -> search policies -> "{text}"
-when asked about "hello"         -> say "Hi!"
-
+when asked about "price", "cost" -> find in menu -> "{name} costs Rs {price}."
+when asked about "hello", "hi" -> say "Hi!"
 if unsure -> say "Sorry, I don't know that yet."
 ```
-```
-# library.axl
-let tax = 0.18
-table menu (name, price, category)
-row "Chilly Paneer", 220, "starter"
-row "Butter Naan", 40, "bread"
-```
-
-| Line | What it does |
-|---|---|
-| `assistant: Name` | Names the assistant |
-| `import file` | Loads `file.axl` (tables, lets, rules) |
-| `let x = expr` | A constant; can use math and earlier lets |
-| `table name (a, b)` + `row v1, v2` | Inline data table |
-| `use addon` | Turns on an add-on |
-| `when asked about "a", "b" -> action` | A rule. Use `anything` to match every question |
-| `if unsure -> say "..."` | Final answer when nothing matched |
-| `fallback llm vault:NAME model M` | Last resort: ask an AI model (the only part that costs money) |
-
-Actions: `say "text"`, `math`, `find in TABLE [where condition]`, `search DOCUMENT_TABLE`, `sql "SELECT ..."` (read-only).
-
-**Math and relations** work anywhere: in `let`, in `where`, and inside `{ }` in answers.
-`+ - * / % ^`, brackets, `sqrt abs round floor ceil min max sin cos tan log`, comparisons `< > <= >= == !=`, `and or not`, `if(cond, a, b)`, and `{expr:2}` for 2 decimals.
-With `use math`, users can ask questions like `(x * 15 = 10)` (answer: `x = 0.6667`), `2x + 3 = 11`, `x^2 = 9`, `12 * (3 + 4)` or `15% of 200`.
-
-In the editor: typing `"` gives `""`, `(` gives `()`, Ctrl+S saves (it also autosaves), and the **Problems** tab shows errors with line numbers.
-
-## Key Merger
-
-1. **Vault** tab: add each provider key (name, provider, key, model).
-2. **Key Merger** tab: tick the keys, set the order and strategy, and merge. You get one `axu_live_...` key.
-3. Use it with any OpenAI SDK:
-```
-from openai import OpenAI
-client = OpenAI(base_url="https://YOUR-SERVER/v1", api_key="axu_live_...")
-client.chat.completions.create(model="any", messages=[{"role": "user", "content": "Hello"}])
-```
-Or call `POST /v1/chat` with `{"q": "Hello"}`. **Failover** tries the keys in order and skips ones that fail. **Rotate** spreads requests across them. Streaming is not supported yet.
-
-## Public API
-
-```
-GET  /v1/ask?q=...                 assistants (Authorization: Bearer KEY)
-POST /v1/ask                       {"q": "...", "assistant": "name"}
-POST /v1/chat                      merged AI keys
-POST /v1/chat/completions          OpenAI-compatible
-GET  /v1/me                        limits, usage, what the key can reach
-```
-Keep keys in a backend or environment variable, never in browser code.
 
 ## Deploy
 
-- Any host: `uvicorn backend.main:app --host 0.0.0.0 --port $PORT`
-- Docker: `docker build -t axu-core . && docker run -p 8000:8000 -v axu:/data -e ADMIN_PASSWORD=... axu-core`
-- **Keep `data/` on a persistent disk**, or restarts will delete your keys and files.
-- Set `ADMIN_PASSWORD` and `AXU_SECRET` (a Fernet key) as environment variables. If `AXU_SECRET` changes, stored vault keys can't be decrypted.
-- Serve over HTTPS.
+```bash
+uvicorn backend.main:app --host 0.0.0.0 --port $PORT
+```
 
-## Limits to know
+Or build/run the included Dockerfile. Keep `data/` on a persistent volume. Set `ADMIN_PASSWORD` and `AXU_SECRET`; use HTTPS. Do not commit `data/admin_password.txt`, `data/secret.key`, or provider secrets to a public repository.
 
-- Add-ons that call free web APIs (weather, dictionary, countries, currency, books, jokes, Wikipedia) and the AI providers depend on those services being reachable.
-- Google Drive import works for files shared as "Anyone with the link".
-- Scanned PDFs have no text and need OCR first.
-- Rules match words, not meaning.
-- Check each provider's terms before letting other people reach their API through your keys.
+## Important limitations
+
+- Streaming responses are not implemented.
+- AXL rule-based assistants are stateless: the OpenAI-compatible endpoint processes the latest user turn, while a merged provider key forwards the supplied messages to its configured provider.
+- Provider APIs and model availability depend on the third-party provider.
+- CORS is permissive (`*`) for browser integrations, but requests still require a valid Bearer key.
