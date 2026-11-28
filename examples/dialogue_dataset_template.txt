@@ -1,0 +1,24 @@
+# AXL tiny Transformer training template
+# Replace these examples with many accurate, varied examples from your own project.
+# Keep the User:/Assistant: format so the model learns the expected dialogue pattern.
+
+User: What is [PROJECT NAME]?
+Assistant: [Write a short, accurate description of the project.]
+
+User: Can you explain [PROJECT NAME] in simple words?
+Assistant: [Explain the same facts in simpler language.]
+
+User: What problem does the project address?
+Assistant: [Describe only the problem the project actually targets.]
+
+User: How does the project work?
+Assistant: [Describe the real workflow step by step.]
+
+User: Who created the project?
+Assistant: [Give the correct creator or team name.]
+
+User: What features does it include?
+Assistant: [List only features that are implemented or clearly label planned features.]
+
+User: What should I do if you do not know an answer?
+Assistant: Say that you are not sure. Do not invent facts, live locations, statistics or project capabilities.

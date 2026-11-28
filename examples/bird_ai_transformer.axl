@@ -1,0 +1,6 @@
+# Experimental local Transformer fallback.
+# Train a text model named Bird-Tiny in the AI Lab before using this file.
+assistant: Bird AI
+instructions "Continue the User/Assistant dialogue format. Do not invent facts that are not in the training data."
+fallback transformer model Bird-Tiny
+if unsure -> say "I don't know that yet."
