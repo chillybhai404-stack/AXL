@@ -12,7 +12,7 @@ AXU Core is a small FastAPI service with a browser-based AXL editor, assistant r
 - **API keys:** separate keys for each external website/app, with assistant scope, usage limits, expiry and revocation.
 - **Provider Vault:** OpenAI-compatible, Anthropic and Gemini keys are encrypted at rest. Use **Test connection** before saving.
 - **Key Merger:** combine provider keys with failover or rotation and receive one `axu_live_...` gateway key.
-- **AI Lab (optional):** train a tiny decoder-only Transformer on text and a small CNN image classifier from your own labelled images; save and serve local models through AXL.
+- **Browser-local AI Lab:** train a tiny decoder-only Transformer and a small CNN classifier directly in the browser with TensorFlow.js. Training, prediction and model storage use the visitor’s device, not the Render server.
 
 ## Run locally
 
@@ -51,7 +51,7 @@ Body:
 }
 ```
 
-For an AXL key, `model` can be the assistant name shown by `GET /v1/models`. A standard unrestricted key can also select a locally trained text model name. If the key can access more than one assistant, choose the assistant by setting `model` to its name, or include the custom field `assistant` with its name or ID:
+For an AXL key, `model` can be the assistant name shown by `GET /v1/models`. If the key can access more than one assistant, choose the assistant by setting `model` to its name, or include the custom field `assistant` with its name or ID:
 
 ```json
 {
@@ -61,7 +61,7 @@ For an AXL key, `model` can be the assistant name shown by `GET /v1/models`. A s
 }
 ```
 
-A normal assistant key invokes the AXL rule engine. A merged key invokes the provider bundle stored in the Vault. A standard unrestricted key can also call a local text model by setting `model` to its saved model name in `/v1/chat/completions`; local image classification is available through `/v1/ai/vision/predict`. The `model` value is accepted for SDK compatibility; the merged key chooses the actual provider model from its Vault settings.
+A normal assistant key invokes the AXL server-side rule engine. A merged key invokes the provider bundle stored in the Vault. Browser-trained AI Lab models are private to the browser profile that trained them and are not exposed as server API endpoints. The `model` value is accepted for SDK compatibility; the merged key chooses the actual provider model from its Vault settings.
 
 ### Browser JavaScript example
 
@@ -95,9 +95,6 @@ console.log(data.choices[0].message.content);
 | `GET` / `POST` | `/v1/ask` | Ask an AXL assistant directly |
 | `GET` | `/v1/models` | Models visible to this key |
 | `GET` | `/v1/me` | Key scope, limits and usage |
-| `GET` | `/v1/ai/models` | List locally trained models |
-| `POST` | `/v1/ai/text/generate` | Generate with a local Transformer |
-| `POST` | `/v1/ai/vision/predict` | Classify an uploaded image with a local CNN |
 | `GET` | `/v1` | API endpoint overview |
 | `GET` | `/v1/health` | Health check |
 
@@ -111,21 +108,23 @@ The Vault now has a **Test connection** action. It sends a tiny prompt and displ
 
 Default model suggestions in the provider form are editable. Provider model availability changes over time; check your provider's current model catalogue when a model returns a 400 or 404.
 
-## AXL AI Lab: local model training
+## AXL AI Lab: browser-local model training
 
-The AI Lab is an **optional** PyTorch-powered part of AXL. The ordinary editor, rules engine, provider vault and API-key gateway still run without PyTorch. To enable local training and inference, install the optional dependencies:
+The AI Lab is powered by **TensorFlow.js in the browser**. When the AI Lab opens, the page loads the TensorFlow.js runtime and JSZip in the visitor’s browser. The model's training and prediction operations run there; WebGL is selected for GPU-backed browser operations when available, with a CPU fallback. No Python, PyTorch, TensorFlow server package, or model-training service is required on Render.
 
-```bash
-pip install -r requirements-ai.txt
-```
+### What stays on the phone/browser
 
-For a specific CUDA/GPU build, choose the matching command from the official [PyTorch installation selector](https://pytorch.org/get-started/locally/) rather than guessing a CUDA wheel.
+- Text dataset files are read with the browser File API and are not uploaded.
+- Vision ZIP files are opened and images are decoded in the browser.
+- Transformer and CNN training execute through TensorFlow.js in the browser.
+- Predictions execute in the same browser.
+- Trained model weights are saved in browser IndexedDB, not under `AXU_DATA`.
 
-Restart the service and open **AI Lab** in the Studio. Model files are saved under `AXU_DATA/ai_models/`; use a persistent disk in production. Training jobs are kept in memory, so their status disappears if the server restarts. Only one local training job runs at a time.
+The AI Lab model database is scoped to the website origin and browser profile. Models do not automatically follow the user to another phone, browser, or website. Clearing site data or browser storage can remove them. The first time AI Lab is opened, the browser needs internet access to load the TensorFlow.js runtime from its CDN. After it is loaded, AI Lab training and prediction run in the browser and do not send datasets, test images, prompts entered in the AI Lab, or trained weights to the AXL server. The Studio console is a separate feature: it sends a question to Render for existing AXL rule evaluation, and only runs a saved browser Transformer locally if the server rules return an unsure result.
 
 ### Text Transformer
 
-AXL currently includes a small **decoder-only causal Transformer** with byte-level UTF-8 tokenization. It is trained from scratch using next-byte prediction. It is deliberately small and educational: it is not a GPT-class conversational model, does not have a pretrained language understanding capability, and may generate incoherent output unless its dataset and training are appropriate. CPU training can be slow. Start with a small model and a text dataset of at least a few thousand characters.
+AXL includes a compact **decoder-only causal Transformer** with byte-level UTF-8 tokenization (256 token values). It is trained from scratch using next-byte prediction. Defaults are deliberately small for phones: one Transformer layer, a 32-dimensional embedding, a 48-byte context and a small batch. The UI limits model sizes to reduce the risk of mobile browser memory exhaustion.
 
 For question/answer experiments, format the training file as dialogue examples, for example:
 
@@ -140,22 +139,21 @@ User: Why include organic waste?
 Assistant: Organic waste can be composted when suitable facilities and practices are available.
 ```
 
-A starter file is included at `examples/dialogue_dataset_template.txt`; replace its placeholders with your verified project facts. Repeated, varied examples are much more useful than a short list of facts. A small next-token model learns patterns in the training sequences; it does **not** automatically become a reliable question-answering assistant just because a document was uploaded. For dependable factual answers, keep the existing provider-backed model or implement a retrieval system alongside the local model.
+A starter file is included at `examples/dialogue_dataset_template.txt`; replace its placeholders with verified facts. Repeated, varied examples are more useful than a short list of facts. A small next-token model learns patterns in its training sequences; it does **not** automatically become a reliable question-answering assistant just because a document was uploaded. It may produce incoherent or incorrect output and is not comparable to a large pretrained assistant.
 
-In `main.axl`, a local model can be selected as an experimental fallback:
+To use the browser-trained Transformer as the fallback in the AXL Studio console, add this to `main.axl`:
 
 ```axl
 assistant: Bird AI
-instructions "Continue the supplied dialogue format. Do not invent project facts."
 fallback transformer model Bird-Tiny
 if unsure -> say "I don't know yet."
 ```
 
-The local fallback prompts the model with `User: ...` and `Assistant:`. It only works if the named text model has already been trained and saved.
+Train a text model named `Bird-Tiny` in AI Lab on the same browser first. The server evaluates AXL rules; if the rules do not answer and this fallback is selected, the Studio page generates the fallback response locally in that browser. A server API key cannot access a model saved in a user's browser.
 
 ### Vision classifier
 
-The Vision Lab trains a small CNN **from scratch** using class-folder images. Upload a ZIP with this structure (a single top-level dataset folder is also accepted):
+The Vision Lab trains a small CNN **from scratch** using class-folder images. Upload a ZIP with this structure (a single wrapper folder is also accepted):
 
 ```text
 plastic/
@@ -169,41 +167,13 @@ organic/
   leaves_01.jpg
 ```
 
-Use at least two classes and at least two valid images per class to start; dozens or hundreds of varied, correctly labelled images per class are a much better target. Keep a separate test set outside the training ZIP to measure real-world performance. Avoid near-duplicate photos across training and test sets. The classifier only predicts the labels it was trained on; it does not explain materials, identify every object, or determine local disposal rules. Its confidence is not a guarantee of correctness.
+Use 2–12 classes and at least two images per class to start; 20–50+ varied, correctly labelled photos per class is a better starting point. The phone-first interface caps a model at 400 images and 128×128 pixels. Keep a separate test set outside the training ZIP. The classifier only predicts labels represented in its training folders; it does not explain materials, recognize every object, or determine local disposal rules. Its confidence is not a guarantee of correctness.
 
-### Local model API
+### Render deployment and resource boundary
 
-The same generated `axu_live_...` API keys can call local-model endpoints. These requests count against the key's configured usage limits.
+Render still serves the AXL website and its existing FastAPI services (editor files, SQLite-backed assistants, provider vault, API-key management and server-side AXL rules). This update moves **AI Lab model training, AI Lab inference and AI Lab model storage** to the browser. Render does not receive the dataset or test image and does not run the TensorFlow model for these AI Lab actions. The browser downloads the runtime script when AI Lab is opened; TensorFlow.js then uses the browser WebGL backend (which can use the phone GPU when hardware acceleration is available) or falls back to CPU. A WebGL backend does not guarantee that the browser is using a physical GPU on every device. Hardware support, available memory, battery state and browser limits affect speed and maximum model size.
 
-Text generation:
-
-```http
-POST /v1/ai/text/generate
-Authorization: Bearer axu_live_YOUR_KEY
-Content-Type: application/json
-```
-
-```json
-{
-  "model": "Bird-Tiny",
-  "prompt": "User: What is Earth Reboot?\nAssistant:",
-  "max_new_tokens": 120,
-  "temperature": 0.7
-}
-```
-
-Vision prediction uses multipart form data:
-
-```http
-POST /v1/ai/vision/predict
-Authorization: Bearer axu_live_YOUR_KEY
-```
-
-Form fields: `model_name=EarthReboot-Vision` and `file=<image>`. Model metadata is available at `GET /v1/ai/models`. Standalone local-model endpoints require a standard API key with no assistant restriction (leave the assistant selector empty when creating the key) and no provider bundle. Assistant-scoped keys can still reach a local Transformer through that assistant’s `fallback transformer model` rule. Per-model permissions are not implemented yet. Keep keys private and revoke keys that are no longer needed.
-
-### Hardware and deployment
-
-The small defaults are intended for experimentation. Training runs on the AXL server, not in the browser. A free/shared CPU web host may time out, run out of RAM, or be too slow for training; hosted platforms may also have ephemeral storage unless a persistent disk is configured. For serious training, use a machine with sufficient RAM and preferably a supported GPU. Do not expose the admin routes publicly without a strong admin password, HTTPS and sensible upload limits.
+The Studio's server-side rule engine and provider-backed API gateway remain server-side. Browser-trained models are not callable from `/v1/chat` or an unrelated website through an API key, because their weights live in the browser's own IndexedDB. The Studio's console can use a saved local Transformer fallback on the same device/browser after server-side AXL rules have been checked.
 
 
 ## AXL language quick example
@@ -230,7 +200,7 @@ Or build/run the included Dockerfile. Keep `data/` on a persistent volume. Set `
 ## Important limitations
 
 - Streaming responses are not implemented.
-- The optional local Transformer and vision CNN are small experimental models, not general-purpose pretrained AI systems.
+- The browser-local Transformer and vision CNN are small experimental models, not general-purpose pretrained AI systems.
 - AXL rule-based assistants are stateless: the OpenAI-compatible endpoint processes the latest user turn, while a merged provider key forwards the supplied messages to its configured provider.
 - Provider APIs and model availability depend on the third-party provider.
 - CORS is permissive (`*`) for browser integrations, but requests still require a valid Bearer key.
