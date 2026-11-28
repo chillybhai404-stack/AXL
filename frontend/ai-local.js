@@ -190,13 +190,24 @@
       return x.sub(mean).div(tf.sqrt(variance.add(1e-5))).mul(scale).add(bias);
     }
 
+    // Apply dense layers to a 2D [batch*time, features] matrix.
+    // TF.js backprop for rank-3 matMul can leave the batch dimension in
+    // the weight gradient (e.g. [2, 32, 256] instead of [32, 256]).
+    // Flattening before matMul makes the weight gradient shape exact.
+    function dense3(x, weight, bias, batch, time, inputSize, outputSize) {
+      return x.reshape([batch * time, inputSize])
+        .matMul(weight)
+        .add(bias)
+        .reshape([batch, time, outputSize]);
+    }
+
     function forward(ids) {
       const [batch, time] = ids.shape;
       if (time > blockSize) throw new Error("Input is longer than this model's context window.");
       let x = tf.gather(tokenEmb, ids).add(positionEmb.slice([0, 0], [time, d]).expandDims(0));
       for (const b of blocks) {
         const n1 = norm(x, b.ln1Scale, b.ln1Bias);
-        const qkv = n1.matMul(b.qkvW).add(b.qkvB).reshape([batch, time, 3, heads, headDim]);
+        const qkv = dense3(n1, b.qkvW, b.qkvB, batch, time, d, d * 3).reshape([batch, time, 3, heads, headDim]);
         const pieces = tf.split(qkv, 3, 2);
         const q = pieces[0].squeeze([2]).transpose([0, 2, 1, 3]);
         const k = pieces[1].squeeze([2]).transpose([0, 2, 1, 3]);
@@ -207,12 +218,13 @@
         const scores = q.matMul(k.transpose([0, 1, 3, 2])).mul(1 / Math.sqrt(headDim));
         const masked = tf.where(mask, scores, tf.fill(scores.shape, -1e9));
         const attention = tf.softmax(masked, -1).matMul(v).transpose([0, 2, 1, 3]).reshape([batch, time, d]);
-        x = x.add(attention.matMul(b.projW).add(b.projB));
+        x = x.add(dense3(attention, b.projW, b.projB, batch, time, d, d));
         const n2 = norm(x, b.ln2Scale, b.ln2Bias);
-        const ff = tf.relu(n2.matMul(b.ff1W).add(b.ff1B)).matMul(b.ff2W).add(b.ff2B);
+        const ff1 = tf.relu(dense3(n2, b.ff1W, b.ff1B, batch, time, d, d * 4));
+        const ff = dense3(ff1, b.ff2W, b.ff2B, batch, time, d * 4, d);
         x = x.add(ff);
       }
-      return norm(x, finalScale, finalBias).matMul(headW).add(headB);
+      return dense3(norm(x, finalScale, finalBias), headW, headB, batch, time, d, 256);
     }
 
     return {
