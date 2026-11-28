@@ -12,9 +12,10 @@
   when asked about anything -> math
   if unsure -> say "I don't know"
   fallback llm vault:NAME model MODEL
+  fallback transformer model MODEL_NAME
 """
 import re, sqlite3
-from . import store, mathx, addons, llm
+from . import store, mathx, addons, llm, ai_lab
 
 STOP = set(
     "the a an is are was were be do does did can could you your yours i me my we our to of in on at for and or "
@@ -150,7 +151,9 @@ def _stmt(spec, files, load, line, table):
         if "wikipedia" not in spec["addons"]:
             spec["addons"].append("wikipedia")
     elif m := re.fullmatch(r"fallback llm vault:(\w+)(?:\s+model\s+(\S+))?", line, re.I):
-        spec["fallbacks"].append((m[1], m[2]))
+        spec["fallbacks"].append(("vault", m[1], m[2]))
+    elif m := re.fullmatch(r"fallback transformer model ([A-Za-z0-9_-]+)", line, re.I):
+        spec["fallbacks"].append(("transformer", m[1], None))
     elif low.startswith("if unsure -> say "):
         spec["unsure"] = _q(line[17:])
     elif low.startswith("when asked about "):
@@ -322,18 +325,25 @@ def ask(aid, q, debug=False):
                 errs.append(f"{name}: nothing found")
         except Exception as ex:
             errs.append(f"{name}: {type(ex).__name__} {str(ex)[:80]}")
-    for vname, model in spec["fallbacks"]:
+    for kind, name, model in spec["fallbacks"]:
         try:
-            entry = store.vault_entry(vname)
-            if model:
-                entry["model"] = model
-            out = llm.call(entry, [{"role": "system", "content": spec["instructions"] or "Answer briefly."},
-                                   {"role": "user", "content": q}], 300)
+            if kind == "transformer":
+                prompt = f"User: {q}\nAssistant:"
+                generated = ai_lab.generate_text(name, prompt, max_new_tokens=180, temperature=0.7)
+                out = generated["continuation"].strip()
+                source = "local-transformer"
+            else:
+                entry = store.vault_entry(name)
+                if model:
+                    entry["model"] = model
+                out = llm.call(entry, [{"role": "system", "content": spec["instructions"] or "Answer briefly."},
+                                       {"role": "user", "content": q}], 300)
+                source = "llm"
         except Exception as ex:
             out = None
-            errs.append(f"llm {vname}: {type(ex).__name__}")
+            errs.append(f"{kind} {name}: {type(ex).__name__}")
         if out:
-            return {"answer": out, "source": "llm"}
+            return {"answer": out, "source": source}
     res = {"answer": spec["unsure"], "source": "unsure"}
     if debug and errs:
         res["debug"] = "; ".join(errs)
