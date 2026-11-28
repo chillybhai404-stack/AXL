@@ -12,6 +12,7 @@ AXU Core is a small FastAPI service with a browser-based AXL editor, assistant r
 - **API keys:** separate keys for each external website/app, with assistant scope, usage limits, expiry and revocation.
 - **Provider Vault:** OpenAI-compatible, Anthropic and Gemini keys are encrypted at rest. Use **Test connection** before saving.
 - **Key Merger:** combine provider keys with failover or rotation and receive one `axu_live_...` gateway key.
+- **AI Lab (optional):** train a tiny decoder-only Transformer on text and a small CNN image classifier from your own labelled images; save and serve local models through AXL.
 
 ## Run locally
 
@@ -50,7 +51,7 @@ Body:
 }
 ```
 
-For an AXL key, `model` can be the assistant name shown by `GET /v1/models`. If the key can access more than one assistant, choose the assistant by setting `model` to its name, or include the custom field `assistant` with its name or ID:
+For an AXL key, `model` can be the assistant name shown by `GET /v1/models`. A standard unrestricted key can also select a locally trained text model name. If the key can access more than one assistant, choose the assistant by setting `model` to its name, or include the custom field `assistant` with its name or ID:
 
 ```json
 {
@@ -60,7 +61,7 @@ For an AXL key, `model` can be the assistant name shown by `GET /v1/models`. If 
 }
 ```
 
-A normal assistant key invokes the AXL rule engine. A merged key invokes the provider bundle stored in the Vault. Both return an OpenAI Chat Completions-shaped response. The `model` value is accepted for SDK compatibility; the merged key chooses the actual provider model from its Vault settings.
+A normal assistant key invokes the AXL rule engine. A merged key invokes the provider bundle stored in the Vault. A standard unrestricted key can also call a local text model by setting `model` to its saved model name in `/v1/chat/completions`; local image classification is available through `/v1/ai/vision/predict`. The `model` value is accepted for SDK compatibility; the merged key chooses the actual provider model from its Vault settings.
 
 ### Browser JavaScript example
 
@@ -94,6 +95,9 @@ console.log(data.choices[0].message.content);
 | `GET` / `POST` | `/v1/ask` | Ask an AXL assistant directly |
 | `GET` | `/v1/models` | Models visible to this key |
 | `GET` | `/v1/me` | Key scope, limits and usage |
+| `GET` | `/v1/ai/models` | List locally trained models |
+| `POST` | `/v1/ai/text/generate` | Generate with a local Transformer |
+| `POST` | `/v1/ai/vision/predict` | Classify an uploaded image with a local CNN |
 | `GET` | `/v1` | API endpoint overview |
 | `GET` | `/v1/health` | Health check |
 
@@ -106,6 +110,101 @@ For OpenAI-compatible providers (OpenAI, Groq, OpenRouter and custom compatible 
 The Vault now has a **Test connection** action. It sends a tiny prompt and displays provider HTTP/connectivity errors before you save the key. This helps distinguish an invalid API key, invalid model, malformed Base URL, provider outage and a network connection failure.
 
 Default model suggestions in the provider form are editable. Provider model availability changes over time; check your provider's current model catalogue when a model returns a 400 or 404.
+
+## AXL AI Lab: local model training
+
+The AI Lab is an **optional** PyTorch-powered part of AXL. The ordinary editor, rules engine, provider vault and API-key gateway still run without PyTorch. To enable local training and inference, install the optional dependencies:
+
+```bash
+pip install -r requirements-ai.txt
+```
+
+For a specific CUDA/GPU build, choose the matching command from the official [PyTorch installation selector](https://pytorch.org/get-started/locally/) rather than guessing a CUDA wheel.
+
+Restart the service and open **AI Lab** in the Studio. Model files are saved under `AXU_DATA/ai_models/`; use a persistent disk in production. Training jobs are kept in memory, so their status disappears if the server restarts. Only one local training job runs at a time.
+
+### Text Transformer
+
+AXL currently includes a small **decoder-only causal Transformer** with byte-level UTF-8 tokenization. It is trained from scratch using next-byte prediction. It is deliberately small and educational: it is not a GPT-class conversational model, does not have a pretrained language understanding capability, and may generate incoherent output unless its dataset and training are appropriate. CPU training can be slow. Start with a small model and a text dataset of at least a few thousand characters.
+
+For question/answer experiments, format the training file as dialogue examples, for example:
+
+```text
+User: What is Earth Reboot?
+Assistant: Earth Reboot is an environmental platform developed in Kashmir.
+
+User: What does it help people do?
+Assistant: It helps people identify waste and learn appropriate disposal methods.
+
+User: Why include organic waste?
+Assistant: Organic waste can be composted when suitable facilities and practices are available.
+```
+
+A starter file is included at `examples/dialogue_dataset_template.txt`; replace its placeholders with your verified project facts. Repeated, varied examples are much more useful than a short list of facts. A small next-token model learns patterns in the training sequences; it does **not** automatically become a reliable question-answering assistant just because a document was uploaded. For dependable factual answers, keep the existing provider-backed model or implement a retrieval system alongside the local model.
+
+In `main.axl`, a local model can be selected as an experimental fallback:
+
+```axl
+assistant: Bird AI
+instructions "Continue the supplied dialogue format. Do not invent project facts."
+fallback transformer model Bird-Tiny
+if unsure -> say "I don't know yet."
+```
+
+The local fallback prompts the model with `User: ...` and `Assistant:`. It only works if the named text model has already been trained and saved.
+
+### Vision classifier
+
+The Vision Lab trains a small CNN **from scratch** using class-folder images. Upload a ZIP with this structure (a single top-level dataset folder is also accepted):
+
+```text
+plastic/
+  bottle_01.jpg
+  wrapper_01.jpg
+paper/
+  newspaper_01.jpg
+  cardboard_01.jpg
+organic/
+  peels_01.jpg
+  leaves_01.jpg
+```
+
+Use at least two classes and at least two valid images per class to start; dozens or hundreds of varied, correctly labelled images per class are a much better target. Keep a separate test set outside the training ZIP to measure real-world performance. Avoid near-duplicate photos across training and test sets. The classifier only predicts the labels it was trained on; it does not explain materials, identify every object, or determine local disposal rules. Its confidence is not a guarantee of correctness.
+
+### Local model API
+
+The same generated `axu_live_...` API keys can call local-model endpoints. These requests count against the key's configured usage limits.
+
+Text generation:
+
+```http
+POST /v1/ai/text/generate
+Authorization: Bearer axu_live_YOUR_KEY
+Content-Type: application/json
+```
+
+```json
+{
+  "model": "Bird-Tiny",
+  "prompt": "User: What is Earth Reboot?\nAssistant:",
+  "max_new_tokens": 120,
+  "temperature": 0.7
+}
+```
+
+Vision prediction uses multipart form data:
+
+```http
+POST /v1/ai/vision/predict
+Authorization: Bearer axu_live_YOUR_KEY
+```
+
+Form fields: `model_name=EarthReboot-Vision` and `file=<image>`. Model metadata is available at `GET /v1/ai/models`. Standalone local-model endpoints require a standard API key with no assistant restriction (leave the assistant selector empty when creating the key) and no provider bundle. Assistant-scoped keys can still reach a local Transformer through that assistant’s `fallback transformer model` rule. Per-model permissions are not implemented yet. Keep keys private and revoke keys that are no longer needed.
+
+### Hardware and deployment
+
+The small defaults are intended for experimentation. Training runs on the AXL server, not in the browser. A free/shared CPU web host may time out, run out of RAM, or be too slow for training; hosted platforms may also have ephemeral storage unless a persistent disk is configured. For serious training, use a machine with sufficient RAM and preferably a supported GPU. Do not expose the admin routes publicly without a strong admin password, HTTPS and sensible upload limits.
+
 
 ## AXL language quick example
 
@@ -131,6 +230,7 @@ Or build/run the included Dockerfile. Keep `data/` on a persistent volume. Set `
 ## Important limitations
 
 - Streaming responses are not implemented.
+- The optional local Transformer and vision CNN are small experimental models, not general-purpose pretrained AI systems.
 - AXL rule-based assistants are stateless: the OpenAI-compatible endpoint processes the latest user turn, while a merged provider key forwards the supplied messages to its configured provider.
 - Provider APIs and model availability depend on the third-party provider.
 - CORS is permissive (`*`) for browser integrations, but requests still require a valid Bearer key.

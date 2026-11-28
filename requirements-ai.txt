@@ -1,0 +1,6 @@
+# Optional local-model training/runtime dependencies.
+# Install with: pip install -r requirements-ai.txt
+-r requirements.txt
+torch>=2.2
+torchvision>=0.17
+Pillow>=10.0
