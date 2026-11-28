@@ -1,13 +1,13 @@
 """AXU Core - AXL studio, add-ons, key merger, vault and master keys (FastAPI)."""
 import os, re, json, hmac, sqlite3, io, zipfile, time
 from typing import List, Optional
-from fastapi import FastAPI, Depends, Header, HTTPException, UploadFile, File, BackgroundTasks, Form
+from fastapi import FastAPI, Depends, Header, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from . import store, engine, ingest, addons, llm, ai_lab
+from . import store, engine, ingest, addons, llm
 
 app = FastAPI(title="AXU Core")
 
@@ -93,19 +93,7 @@ class ChatIn(BaseModel):
     stream: Optional[bool] = False
 
 
-class TextGenerateIn(BaseModel):
-    model: str
-    prompt: str
-    max_new_tokens: int = 160
-    temperature: float = 0.8
 
-
-def _vision_train_task(jid, dataset_root, cleanup_root, model_name, epochs, image_size, batch_size):
-    try:
-        ai_lab.train_vision(jid, str(dataset_root), model_name, epochs, image_size, batch_size)
-    finally:
-        import shutil
-        shutil.rmtree(cleanup_root, ignore_errors=True)
 
 
 # ---------- helpers ----------
@@ -354,99 +342,8 @@ def delete_vault(name: str):
     return {"ok": True}
 
 
-# ---------- AI Lab: local Transformer + vision models ----------
-@app.get("/api/ai/models", dependencies=A)
-def ai_models():
-    return ai_lab.list_models()
-
-
-@app.post("/api/ai/text/train", dependencies=A)
-def ai_train_text(
-    background_tasks: BackgroundTasks,
-    file: UploadFile = File(...),
-    model_name: str = Form(...),
-    epochs: int = Form(3),
-    block_size: int = Form(96),
-    embedding_size: int = Form(64),
-    attention_heads: int = Form(4),
-    layers: int = Form(2),
-    steps_per_epoch: int = Form(30),
-):
-    try:
-        ai_lab.require_torch()
-        name = ai_lab.slug(model_name)
-        if ai_lab.text_model_dir(name).exists():
-            raise HTTPException(409, "A text model with that name already exists. Choose another name.")
-        raw = file.file.read(5 * 1024 * 1024 + 1)
-        path = ai_lab.save_text_upload(raw, file.filename or "dataset.txt")
-        jid = ai_lab.create_job("text", name)
-        settings = {"epochs": epochs, "block_size": block_size, "embedding_size": embedding_size,
-                    "attention_heads": attention_heads, "layers": layers, "steps_per_epoch": steps_per_epoch}
-        background_tasks.add_task(ai_lab.train_text, jid, str(path), name, settings)
-        return {"job_id": jid, "status": "queued", "model": name,
-                "note": "Training runs on the AXL server. Keep the service running until it finishes."}
-    except HTTPException:
-        raise
-    except (ValueError, RuntimeError) as exc:
-        raise HTTPException(400, str(exc))
-
-
-@app.post("/api/ai/vision/train", dependencies=A)
-def ai_train_vision(
-    background_tasks: BackgroundTasks,
-    file: UploadFile = File(...),
-    model_name: str = Form(...),
-    epochs: int = Form(5),
-    image_size: int = Form(96),
-    batch_size: int = Form(16),
-):
-    try:
-        ai_lab.require_torch()
-        name = ai_lab.slug(model_name)
-        if ai_lab.vision_model_dir(name).exists():
-            raise HTTPException(409, "A vision model with that name already exists. Choose another name.")
-        raw = file.file.read(60 * 1024 * 1024 + 1)
-        root, cleanup_root = ai_lab.save_vision_zip(raw)
-        jid = ai_lab.create_job("vision", name)
-        background_tasks.add_task(_vision_train_task, jid, str(root), str(cleanup_root), name, epochs, image_size, batch_size)
-        return {"job_id": jid, "status": "queued", "model": name,
-                "note": "Training runs on the AXL server. Keep the service running until it finishes."}
-    except HTTPException:
-        raise
-    except (ValueError, RuntimeError) as exc:
-        raise HTTPException(400, str(exc))
-
-
-@app.get("/api/ai/jobs/{job_id}", dependencies=A)
-def ai_job(job_id: str):
-    result = ai_lab.get_job(job_id)
-    if not result:
-        raise HTTPException(404, "Training job not found. Jobs are held in memory and disappear after a server restart.")
-    return result
-
-
-@app.post("/api/ai/text/generate", dependencies=A)
-def ai_generate_text(b: TextGenerateIn):
-    try:
-        return ai_lab.generate_text(b.model, b.prompt, b.max_new_tokens, b.temperature)
-    except FileNotFoundError as exc:
-        raise HTTPException(404, str(exc))
-    except (ValueError, RuntimeError) as exc:
-        raise HTTPException(400, str(exc))
-
-
-@app.post("/api/ai/vision/predict", dependencies=A)
-def ai_predict_vision(model_name: str = Form(...), file: UploadFile = File(...)):
-    raw = file.file.read(10 * 1024 * 1024 + 1)
-    if len(raw) > 10 * 1024 * 1024:
-        raise HTTPException(413, "Image is limited to 10 MB")
-    try:
-        return ai_lab.predict_vision(model_name, raw)
-    except FileNotFoundError as exc:
-        raise HTTPException(404, str(exc))
-    except (ValueError, RuntimeError) as exc:
-        raise HTTPException(400, str(exc))
-
+# The AI Lab runs in the client browser through TensorFlow.js. No training or
+# inference endpoints are exposed by this server.
 
 # ---------- public API (master keys) ----------
 def _bearer(authorization):
@@ -483,13 +380,6 @@ def metadata_key_auth(credentials: Optional[HTTPAuthorizationCredentials] = Depe
         raise HTTPException(401, "This key has expired")
     return k
 
-
-def require_local_model_access(key):
-    """Local model endpoints use standard unrestricted keys; scoped and merged keys stay scoped."""
-    allowed_assistants = json.loads(key["assistants"] or "[]")
-    bundle = json.loads(key["bundle"] or "[]")
-    if allowed_assistants or bundle:
-        raise HTTPException(403, "Local model endpoints require a standard API key with no assistant restriction and no provider bundle. Create a separate unrestricted API key for your local models.")
 
 
 def resolve(key, ref):
@@ -557,19 +447,6 @@ def _chat(key, b):
     user_turns = [m["content"] for m in msgs if m["role"] == "user"]
     question = user_turns[-1] if user_turns else msgs[-1]["content"]
     assistant_ref = b.assistant
-    # Selecting a locally trained text model by its model name also works with
-    # ordinary OpenAI-compatible clients at /v1/chat/completions.
-    if not assistant_ref and b.model and ai_lab.text_model_dir(b.model).joinpath("model.pt").exists():
-        require_local_model_access(key)
-        system_text = "\n".join(m["content"] for m in msgs if m["role"] == "system")
-        turns = [m for m in msgs if m["role"] in ("user", "assistant")][-8:]
-        history = "\n".join(("User" if m["role"] == "user" else "Assistant") + ": " + m["content"] for m in turns)
-        prompt = ((system_text + "\n") if system_text else "") + history + "\nAssistant:"
-        try:
-            generated = ai_lab.generate_text(b.model, prompt, max_new_tokens=min(max(b.max_tokens, 1), 200), temperature=0.8)
-        except (FileNotFoundError, ValueError, RuntimeError) as exc:
-            raise HTTPException(400, str(exc))
-        return {"answer": generated["continuation"].strip(), "provider": "AXL Transformer", "source": "local-transformer"}
     if not assistant_ref and b.model and b.model.lower() not in ("axl", "axl-assistant", "any"):
         assistant_ref = b.model
     aid = resolve(key, assistant_ref)
@@ -606,8 +483,6 @@ def models(key=Depends(metadata_key_auth)):
         allowed = json.loads(key["assistants"])
         rows = store.rows("SELECT id, name FROM assistants ORDER BY id")
         ids = [r["name"] for r in rows if not allowed or r["id"] in allowed]
-        if not allowed:
-            ids.extend(m["name"] for m in ai_lab.list_models()["text"] if m["name"] not in ids)
         if not ids:
             ids = ["axl-assistant"]
     return {"object": "list", "data": [{"id": model_id, "object": "model", "created": 0,
@@ -635,44 +510,12 @@ def me(credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_sche
     }
 
 
-# Public local-model endpoints. They use the same axu_live_ keys and usage limits.
-@app.get("/v1/ai/models")
-def public_ai_models(key=Depends(metadata_key_auth)):
-    require_local_model_access(key)
-    return ai_lab.list_models()
-
-
-@app.post("/v1/ai/text/generate")
-def public_ai_generate_text(b: TextGenerateIn, key=Depends(key_auth)):
-    require_local_model_access(key)
-    try:
-        return ai_lab.generate_text(b.model, b.prompt, b.max_new_tokens, b.temperature)
-    except FileNotFoundError as exc:
-        raise HTTPException(404, str(exc))
-    except (ValueError, RuntimeError) as exc:
-        raise HTTPException(400, str(exc))
-
-
-@app.post("/v1/ai/vision/predict")
-def public_ai_predict_vision(model_name: str = Form(...), file: UploadFile = File(...), key=Depends(key_auth)):
-    require_local_model_access(key)
-    raw = file.file.read(10 * 1024 * 1024 + 1)
-    if len(raw) > 10 * 1024 * 1024:
-        raise HTTPException(413, "Image is limited to 10 MB")
-    try:
-        return ai_lab.predict_vision(model_name, raw)
-    except FileNotFoundError as exc:
-        raise HTTPException(404, str(exc))
-    except (ValueError, RuntimeError) as exc:
-        raise HTTPException(400, str(exc))
-
-
 @app.get("/v1")
 def api_info():
     return {"name": "AXU Core API", "status": "ok", "endpoints": {
         "chat": "POST /v1/chat", "openai_compatible": "POST /v1/chat/completions",
         "models": "GET /v1/models", "assistant": "GET or POST /v1/ask", "account": "GET /v1/me",
-        "local_text_model": "POST /v1/ai/text/generate", "local_vision_model": "POST /v1/ai/vision/predict"}}
+        "browser_ai": "AXL AI Lab runs locally in the user's browser; it is not a server API."}}
 
 
 @app.get("/v1/health")

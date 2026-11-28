@@ -15,7 +15,7 @@
   fallback transformer model MODEL_NAME
 """
 import re, sqlite3
-from . import store, mathx, addons, llm, ai_lab
+from . import store, mathx, addons, llm
 
 STOP = set(
     "the a an is are was were be do does did can could you your yours i me my we our to of in on at for and or "
@@ -328,10 +328,12 @@ def ask(aid, q, debug=False):
     for kind, name, model in spec["fallbacks"]:
         try:
             if kind == "transformer":
-                prompt = f"User: {q}\nAssistant:"
-                generated = ai_lab.generate_text(name, prompt, max_new_tokens=180, temperature=0.7)
-                out = generated["continuation"].strip()
-                source = "local-transformer"
+                # Browser-trained models live in that browser's IndexedDB and
+                # must never be pulled onto the server for inference. The Studio
+                # console may handle this fallback locally after rule evaluation.
+                out = None
+                errs.append("Browser-local Transformer fallback is available only in the AXL Studio browser.")
+                source = "unsure"
             else:
                 entry = store.vault_entry(name)
                 if model:
