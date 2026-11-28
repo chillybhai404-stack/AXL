@@ -302,6 +302,23 @@ $("#tq").onkeydown = async e => {
   try {
     await Promise.all([...dirty].map(saveFile));
     const r = await api(`/api/assistants/${cur.id}/test`, {method: "POST", body: {q}});
+    // AXL rule evaluation remains server-backed. If the rules do not answer
+    // and main.axl declares a Transformer fallback, run that saved model here
+    // in this browser instead of asking Render to execute a neural network.
+    if (r.source === "unsure" && window.AXLAI) {
+      const source = files["main.axl"] || "";
+      const fallback = source.match(/^\s*fallback\s+transformer\s+model\s+([A-Za-z0-9_-]+)\s*$/im);
+      if (fallback) {
+        const wanted = fallback[1].toLowerCase();
+        const localModels = (await AXLAI.listModels()).filter(m => m.kind === "text");
+        const model = localModels.find(m => m.name.toLowerCase() === wanted);
+        if (model) {
+          const generated = await AXLAI.generateText(model.id, `User: ${q}\nAssistant:`, 100, 0.8);
+          return log("bot", generated.continuation.trim() || generated.text, "browser-transformer · this device");
+        }
+        return log("bot", `${r.answer}\nTrain or select the '${fallback[1]}' model in AI Lab on this browser first.`, "local model not found on this device");
+      }
+    }
     log("bot", r.answer, r.source + (r.debug ? " | " + r.debug : ""));
   } catch (err) { log("bot", err.message, "error"); }
 };
@@ -442,72 +459,134 @@ $("#mbtn").onclick = async () => {
 if (pw) enter();
 
 
-// ---------- AI Lab ----------
+// ---------- AI Lab: browser-local TensorFlow.js engine ----------
+function setAiStatus(id, message, bad = false) {
+  const el = $(id);
+  if (!el) return;
+  el.textContent = message;
+  el.className = "small " + (bad ? "err" : "muted");
+}
+
+function aiBusy(button, busy, label) {
+  if (!button) return;
+  if (busy) {
+    button.dataset.originalLabel = button.textContent;
+    button.disabled = true;
+    button.textContent = label || "Working…";
+  } else {
+    button.disabled = false;
+    button.textContent = button.dataset.originalLabel || button.textContent;
+    delete button.dataset.originalLabel;
+  }
+}
+
 async function loadAiModels() {
+  const runtimeBox = $("#ai-runtime-status");
   try {
-    const data = await api("/api/ai/models");
-    const textModels = data.text || [], visionModels = data.vision || [];
-    $("#ai-text-model").innerHTML = textModels.map(m => `<option value="${esc(m.name)}">${esc(m.name)}</option>`).join("") || '<option value="">No trained text models</option>';
-    $("#ai-vision-model").innerHTML = visionModels.map(m => `<option value="${esc(m.name)}">${esc(m.name)}</option>`).join("") || '<option value="">No trained vision models</option>';
-    const groups = [
-      ...textModels.map(m => ({...m, kind: "Text Transformer"})),
-      ...visionModels.map(m => ({...m, kind: "Vision CNN"}))
-    ];
-    $("#ai-model-list").innerHTML = groups.map(m => {
-      const metrics = (m.metrics || []).map(x => m.kind === "Text Transformer"
+    if (!window.AXLAI) throw new Error("AXL's browser AI module did not load. Refresh this page.");
+    const runtime = await AXLAI.init();
+    if (runtimeBox) {
+      runtimeBox.textContent = `${runtime.device} · TensorFlow.js ${runtime.version} · backend: ${runtime.backend}. ${runtime.note} Models and datasets stay in this browser.`;
+      runtimeBox.className = "ai-runtime " + (runtime.backend === "webgl" || runtime.backend === "webgpu" ? "ok" : "muted");
+    }
+    const models = await AXLAI.listModels();
+    const textModels = models.filter(m => m.kind === "text");
+    const visionModels = models.filter(m => m.kind === "vision");
+    $("#ai-text-model").innerHTML = textModels.map(m => `<option value="${esc(m.id)}">${esc(m.name)}</option>`).join("") || '<option value="">No browser-trained text models</option>';
+    $("#ai-vision-model").innerHTML = visionModels.map(m => `<option value="${esc(m.id)}">${esc(m.name)}</option>`).join("") || '<option value="">No browser-trained vision models</option>';
+    $("#ai-model-list").innerHTML = models.map(m => {
+      const metrics = (m.metrics || []).map(x => m.kind === "text"
         ? `E${x.epoch}: loss ${x.train_loss}`
-        : `E${x.epoch}: validation ${(100 * x.validation_accuracy).toFixed(1)}%`).join(" · ");
-      const details = m.kind === "Text Transformer"
-        ? `${Number(m.parameters || 0).toLocaleString()} parameters · ${m.dataset_bytes || 0} dataset bytes`
-        : `${m.image_count || 0} images · ${(m.classes || []).join(", ")}`;
-      return `<div class="ai-model"><div><b>${esc(m.name)}</b><span class="ai-tag">${esc(m.kind)}</span><p class="muted small">${esc(details)}</p><p class="muted small">${esc(metrics)}</p></div></div>`;
-    }).join("") || '<p class="muted small">No local models yet. Train one above.</p>';
-    if (!data.torch_available) $("#ai-model-list").insertAdjacentHTML("beforeend", '<p class="err small">PyTorch is not installed. Add requirements-ai.txt dependencies and restart the server.</p>');
-  } catch (e) { $("#ai-model-list").textContent = e.message; }
+        : `E${x.epoch}: validation ${(100 * (x.validation_accuracy || 0)).toFixed(1)}%`).join(" · ");
+      const details = m.kind === "text"
+        ? `${Number(m.parameters || 0).toLocaleString()} parameters · ${Number(m.datasetBytes || 0).toLocaleString()} training bytes`
+        : `${m.imageCount || 0} images · ${(m.classes || []).join(", ")} · ${m.imageSize || 0}px`;
+      return `<div class="ai-model"><div><b>${esc(m.name)}</b><span class="ai-tag">${m.kind === "text" ? "Text Transformer" : "Vision CNN"}</span><p class="muted small">${esc(details)}</p><p class="muted small">${esc(metrics || "Saved on this device")}</p></div><button class="sm ai-delete" data-ai-delete="${esc(m.id)}">Delete</button></div>`;
+    }).join("") || '<p class="muted small">No models saved in this browser yet. Train one above.</p>';
+  } catch (e) {
+    if (runtimeBox) { runtimeBox.textContent = e.message; runtimeBox.className = "ai-runtime err"; }
+    $("#ai-model-list").textContent = e.message;
+  }
 }
 $("#ai-refresh").onclick = loadAiModels;
 
-function setAiStatus(id, message, bad = false) {
-  const el = $(id); el.textContent = message; el.className = "small " + (bad ? "err" : "muted");
-}
-async function pollAiJob(jobId, statusId) {
-  while (true) {
-    const job = await api(`/api/ai/jobs/${encodeURIComponent(jobId)}`);
-    const metrics = (job.metrics || []).slice(-1)[0];
-    const metricText = metrics ? (metrics.train_loss !== undefined ? ` · train loss ${metrics.train_loss}` : ` · validation ${(100 * metrics.validation_accuracy).toFixed(1)}%`) : "";
-    setAiStatus(statusId, `${job.status.toUpperCase()} · ${job.progress || 0}% · ${job.message || ""}${metricText}`, job.status === "failed");
-    if (["completed", "failed"].includes(job.status)) { if (job.status === "completed") await loadAiModels(); return job; }
-    await new Promise(resolve => setTimeout(resolve, 1800));
-  }
-}
 $("#ai-text-train").onclick = async () => {
+  const button = $("#ai-text-train");
   const file = $("#ai-text-file").files[0];
   if (!file) return setAiStatus("#ai-text-status", "Choose a text dataset first.", true);
-  const fd = new FormData();
-  fd.append("file", file); fd.append("model_name", $("#ai-text-name").value);
-  ["epochs", "steps", "block", "emb", "heads", "layers"].forEach(k => fd.append(
-    ({epochs:"epochs",steps:"steps_per_epoch",block:"block_size",emb:"embedding_size",heads:"attention_heads",layers:"layers"})[k], $("#ai-text-" + k).value));
-  try { const r = await api("/api/ai/text/train", {method:"POST", body:fd}); await pollAiJob(r.job_id, "#ai-text-status"); }
-  catch (e) { setAiStatus("#ai-text-status", e.message, true); }
+  aiBusy(button, true, "Training on this device…");
+  try {
+    const result = await AXLAI.trainText({
+      file,
+      name: $("#ai-text-name").value,
+      epochs: $("#ai-text-epochs").value,
+      steps: $("#ai-text-steps").value,
+      blockSize: $("#ai-text-block").value,
+      embeddingSize: $("#ai-text-emb").value,
+      heads: $("#ai-text-heads").value,
+      layers: $("#ai-text-layers").value,
+      onProgress: p => setAiStatus("#ai-text-status", `${p.percent}% · ${p.message}${p.metrics ? ` · loss ${p.metrics[p.metrics.length - 1].train_loss}` : ""}`)
+    });
+    setAiStatus("#ai-text-status", `Saved ${result.name} in this browser. It will be available on this device and browser profile.`);
+    await loadAiModels();
+  } catch (e) { setAiStatus("#ai-text-status", e.message, true); }
+  finally { aiBusy(button, false); }
 };
+
 $("#ai-vision-train").onclick = async () => {
+  const button = $("#ai-vision-train");
   const file = $("#ai-vision-file").files[0];
   if (!file) return setAiStatus("#ai-vision-status", "Choose a dataset ZIP first.", true);
-  const fd = new FormData(); fd.append("file", file); fd.append("model_name", $("#ai-vision-name").value);
-  fd.append("epochs", $("#ai-vision-epochs").value); fd.append("image_size", $("#ai-vision-size").value); fd.append("batch_size", $("#ai-vision-batch").value);
-  try { const r = await api("/api/ai/vision/train", {method:"POST", body:fd}); await pollAiJob(r.job_id, "#ai-vision-status"); }
-  catch (e) { setAiStatus("#ai-vision-status", e.message, true); }
+  aiBusy(button, true, "Training on this device…");
+  try {
+    const result = await AXLAI.trainVision({
+      file,
+      name: $("#ai-vision-name").value,
+      epochs: $("#ai-vision-epochs").value,
+      imageSize: $("#ai-vision-size").value,
+      batchSize: $("#ai-vision-batch").value,
+      onProgress: p => setAiStatus("#ai-vision-status", `${p.percent}% · ${p.message}${p.metrics ? ` · val ${(100 * (p.metrics[p.metrics.length - 1].validation_accuracy || 0)).toFixed(1)}%` : ""}`)
+    });
+    setAiStatus("#ai-vision-status", `Saved ${result.name} in this browser. Images and training stayed on this device.`);
+    await loadAiModels();
+  } catch (e) { setAiStatus("#ai-vision-status", e.message, true); }
+  finally { aiBusy(button, false); }
 };
+
 $("#ai-text-generate").onclick = async () => {
-  const model = $("#ai-text-model").value; if (!model) return $("#ai-text-output").textContent = "Train a text model first.";
-  $("#ai-text-output").textContent = "Generating…";
-  try { const r = await api("/api/ai/text/generate", {method:"POST", body:{model, prompt:$("#ai-text-prompt").value, max_new_tokens:160, temperature:0.8}}); $("#ai-text-output").textContent = r.text + "\n\n" + r.warning; }
-  catch (e) { $("#ai-text-output").textContent = e.message; }
+  const button = $("#ai-text-generate");
+  const model = $("#ai-text-model").value;
+  if (!model) return $("#ai-text-output").textContent = "Train a text model in this browser first.";
+  $("#ai-text-output").textContent = "Generating on this device…";
+  aiBusy(button, true, "Generating…");
+  try {
+    const result = await AXLAI.generateText(model, $("#ai-text-prompt").value, 100, 0.8);
+    $("#ai-text-output").textContent = result.text + "\n\n" + result.warning;
+  } catch (e) { $("#ai-text-output").textContent = e.message; }
+  finally { aiBusy(button, false); }
 };
+
 $("#ai-vision-predict").onclick = async () => {
-  const model = $("#ai-vision-model").value, file = $("#ai-vision-test-file").files[0];
-  if (!model || !file) return $("#ai-vision-output").textContent = "Choose a trained vision model and test image.";
-  const fd = new FormData(); fd.append("model_name", model); fd.append("file", file); $("#ai-vision-output").textContent = "Classifying…";
-  try { const r = await api("/api/ai/vision/predict", {method:"POST", body:fd}); $("#ai-vision-output").textContent = `Prediction: ${r.category}\nConfidence: ${(100*r.confidence).toFixed(1)}%\nScores: ${JSON.stringify(r.scores, null, 2)}\n\n${r.warning}`; }
-  catch (e) { $("#ai-vision-output").textContent = e.message; }
+  const button = $("#ai-vision-predict");
+  const model = $("#ai-vision-model").value;
+  const file = $("#ai-vision-test-file").files[0];
+  if (!model || !file) return $("#ai-vision-output").textContent = "Choose a browser-trained vision model and a test image.";
+  $("#ai-vision-output").textContent = "Classifying on this device…";
+  aiBusy(button, true, "Classifying…");
+  try {
+    const result = await AXLAI.predictVision(model, file);
+    const scores = result.scores.map(x => `${x.category}: ${(100 * x.confidence).toFixed(1)}%`).join("\n");
+    $("#ai-vision-output").textContent = `Prediction: ${result.category}\nConfidence: ${(100 * result.confidence).toFixed(1)}%\n\n${scores}\n\n${result.warning}`;
+  } catch (e) { $("#ai-vision-output").textContent = e.message; }
+  finally { aiBusy(button, false); }
+};
+
+$("#ai-model-list").onclick = async e => {
+  const button = e.target.closest("[data-ai-delete]");
+  if (!button) return;
+  const id = button.dataset.aiDelete;
+  if (!confirm("Delete this model and its saved weights from this browser?")) return;
+  button.disabled = true;
+  try { await AXLAI.deleteModel(id); await loadAiModels(); }
+  catch (err) { button.disabled = false; alert(err.message); }
 };

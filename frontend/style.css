@@ -181,3 +181,13 @@ pre{background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:
 .ai-output{min-height:110px;max-height:280px;white-space:pre-wrap;overflow-wrap:anywhere;margin-top:12px}
 .ai-warning{font-size:11px;color:var(--mut);line-height:1.6;margin:16px 2px 28px}
 @media(max-width:860px){.ai-wrap{padding:12px}.ai-grid{grid-template-columns:1fr}.box.ai-wide{grid-column:auto}.ai-model-list{grid-template-columns:1fr}.ai-intro h1{font-size:19px}}
+
+/* Browser-local AI runtime status and mobile-first training feedback */
+.ai-runtime{padding:10px 12px;margin:0 0 14px;border:1px solid var(--line);border-radius:7px;background:var(--panel);font-size:12px;color:var(--mut);overflow-wrap:anywhere}
+.ai-runtime.ok{border-color:#28594e;color:#72cdb7}
+.ai-runtime.err{border-color:#733a3a;color:#ff8b8b}
+.ai-model{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
+.ai-model>div{min-width:0}
+.ai-delete{flex:none;margin-top:8px;color:#ef9b9b}
+.ai-box button:disabled{opacity:.6;cursor:progress}
+@media(max-width:860px){.ai-runtime{font-size:11px}.ai-model{gap:6px}}

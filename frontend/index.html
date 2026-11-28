@@ -190,67 +190,70 @@ print(r.choices[0].message.content)</pre>
   <section id="view-ai" class="page" hidden>
     <div class="ai-wrap">
       <div class="ai-intro">
-        <div><h1>AXL AI Lab</h1><p class="muted">Train and run small models on your own server. PyTorch is an optional install.</p></div>
-        <span class="ai-tag">LOCAL MODEL ENGINE</span>
+        <div><h1>AXL AI Lab</h1><p class="muted">Train and run models directly in this browser. Your phone does the AI work.</p></div>
+        <span class="ai-tag">DEVICE-LOCAL AI</span>
       </div>
+      <div id="ai-runtime-status" class="ai-runtime">Loading TensorFlow.js browser runtime…</div>
       <div class="ai-grid">
         <div class="box ai-box">
           <h2>Text Transformer</h2>
-          <p class="muted small">A tiny decoder-only Transformer trained from scratch to predict the next UTF-8 byte.</p>
+          <p class="muted small">A small decoder-only Transformer trained from scratch on UTF-8 bytes. It learns patterns from your text; it is an experiment, not a GPT-sized assistant.</p>
           <label>Model name</label><input id="ai-text-name" value="Bird-Tiny" placeholder="e.g. Bird-Tiny">
-          <label>Text dataset (.txt, .md or .csv)</label><input id="ai-text-file" type="file" accept=".txt,.md,.csv">
+          <label>Text dataset (.txt, .md or .csv)</label><input id="ai-text-file" type="file" accept=".txt,.md,.csv,text/plain,text/markdown,text/csv">
           <div class="grid">
-            <div><label>Epochs</label><input id="ai-text-epochs" type="number" min="1" max="20" value="3"></div>
-            <div><label>Steps per epoch</label><input id="ai-text-steps" type="number" min="5" max="150" value="30"></div>
-            <div><label>Context bytes</label><input id="ai-text-block" type="number" min="32" max="512" value="96"></div>
-            <div><label>Embedding size</label><input id="ai-text-emb" type="number" min="32" max="256" value="64"></div>
-            <div><label>Attention heads</label><input id="ai-text-heads" type="number" min="1" max="8" value="4"></div>
-            <div><label>Transformer layers</label><input id="ai-text-layers" type="number" min="1" max="6" value="2"></div>
+            <div><label>Epochs</label><input id="ai-text-epochs" type="number" min="1" max="10" value="2"></div>
+            <div><label>Steps per epoch</label><input id="ai-text-steps" type="number" min="5" max="60" value="15"></div>
+            <div><label>Context bytes</label><input id="ai-text-block" type="number" min="32" max="128" value="48"></div>
+            <div><label>Embedding size</label><input id="ai-text-emb" type="number" min="16" max="96" value="32"></div>
+            <div><label>Attention heads</label><input id="ai-text-heads" type="number" min="1" max="4" value="2"></div>
+            <div><label>Transformer layers</label><input id="ai-text-layers" type="number" min="1" max="2" value="1"></div>
           </div>
-          <button id="ai-text-train" class="primary">Train text model</button>
-          <p id="ai-text-status" class="small muted" aria-live="polite">Use dialogue-style training text for question/answer experiments.</p>
+          <button id="ai-text-train" class="primary">Train on this device</button>
+          <p id="ai-text-status" class="small muted" aria-live="polite">Choose a dataset. The file is read locally and is not uploaded to Render.</p>
         </div>
 
         <div class="box ai-box">
           <h2>Vision classifier</h2>
-          <p class="muted small">Train a small CNN from scratch. ZIP structure: <code>plastic/photo1.jpg</code>, <code>paper/photo2.jpg</code>, etc.</p>
+          <p class="muted small">Train a compact CNN from your labelled photos in this browser. ZIP layout: <code>plastic/photo1.jpg</code>, <code>paper/photo2.jpg</code>, etc.</p>
           <label>Model name</label><input id="ai-vision-name" value="EarthReboot-Vision" placeholder="e.g. EarthReboot-Vision">
           <label>Dataset ZIP (class folders containing images)</label><input id="ai-vision-file" type="file" accept=".zip,application/zip">
           <div class="grid">
-            <div><label>Epochs</label><input id="ai-vision-epochs" type="number" min="1" max="20" value="5"></div>
-            <div><label>Image size</label><select id="ai-vision-size"><option>96</option><option>128</option><option>160</option></select></div>
-            <div><label>Batch size</label><select id="ai-vision-batch"><option>8</option><option selected>16</option><option>32</option></select></div>
+            <div><label>Epochs</label><input id="ai-vision-epochs" type="number" min="1" max="12" value="4"></div>
+            <div><label>Image size</label><select id="ai-vision-size"><option>48</option><option selected>64</option><option>96</option><option>128</option></select></div>
+            <div><label>Batch size</label><select id="ai-vision-batch"><option>2</option><option selected>4</option><option>8</option><option>16</option></select></div>
           </div>
-          <button id="ai-vision-train" class="primary">Train vision model</button>
-          <p id="ai-vision-status" class="small muted" aria-live="polite">Use at least two classes and several varied photos per class.</p>
+          <button id="ai-vision-train" class="primary">Train on this device</button>
+          <p id="ai-vision-status" class="small muted" aria-live="polite">Use 2–12 folders and ideally 20–50 varied photos per class. Maximum 400 images per model.</p>
         </div>
 
         <div class="box ai-box ai-wide">
-          <div class="ai-row"><div><h2>Saved models</h2><p class="muted small">Models are saved under your AXU_DATA persistent storage.</p></div><button id="ai-refresh" class="sm">Refresh</button></div>
-          <div id="ai-model-list" class="ai-model-list"><p class="muted small">Loading models…</p></div>
+          <div class="ai-row"><div><h2>Saved models</h2><p class="muted small">Stored in this browser's IndexedDB. They do not occupy Render storage.</p></div><button id="ai-refresh" class="sm">Refresh</button></div>
+          <div id="ai-model-list" class="ai-model-list"><p class="muted small">Checking browser storage…</p></div>
         </div>
 
         <div class="box ai-box">
           <h2>Test text generation</h2>
-          <label>Text model</label><select id="ai-text-model"><option value="">No trained models</option></select>
+          <label>Text model</label><select id="ai-text-model"><option value="">No browser-trained text models</option></select>
           <label>Prompt</label><textarea id="ai-text-prompt" rows="4" placeholder="User: What is Earth Reboot?
 Assistant:"></textarea>
-          <button id="ai-text-generate" class="primary">Generate text</button>
+          <button id="ai-text-generate" class="primary">Generate on this device</button>
           <pre id="ai-text-output" class="ai-output">Generated text appears here.</pre>
         </div>
 
         <div class="box ai-box">
           <h2>Test vision prediction</h2>
-          <label>Vision model</label><select id="ai-vision-model"><option value="">No trained models</option></select>
+          <label>Vision model</label><select id="ai-vision-model"><option value="">No browser-trained vision models</option></select>
           <label>Test image</label><input id="ai-vision-test-file" type="file" accept="image/*">
-          <button id="ai-vision-predict" class="primary">Classify image</button>
+          <button id="ai-vision-predict" class="primary">Classify on this device</button>
           <pre id="ai-vision-output" class="ai-output">Prediction appears here.</pre>
         </div>
       </div>
-      <p class="ai-warning">Important: these are educational, small models—not GPT-level assistants. A text model learns next-byte prediction, and a vision model learns only the classes in its dataset. Training on CPU can be slow. For public deployment, use persistent storage and secure admin/API keys.</p>
+      <p class="ai-warning">Local-computing boundary: TensorFlow.js performs training and prediction inside the browser, using WebGL/GPU when available and CPU otherwise. Text files, ZIP datasets, test images and model weights are not sent to Render. Models are saved per browser and device; clearing site data can remove them. Render still hosts this website and the existing AXL editor, database, vault and API services, but those services are separate from this browser AI runtime. Small models need suitable training data and may produce poor predictions or incoherent text.</p>
     </div>
   </section>
 </div>
+<script src="vendor/jszip.min.js"></script>
+<script src="ai-local.js"></script>
 <script src="editor.js"></script>
 <script src="app.js"></script>
 </body>
