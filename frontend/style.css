@@ -157,3 +157,27 @@ pre{background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:
   #gutter{width:38px;font-size:11px}
   #hl,#code{font-size:12px;padding-left:9px;padding-right:9px}
 }
+
+/* AXL AI Lab */
+.ai-wrap{max-width:1240px;margin:0 auto;padding:24px}
+.ai-intro{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:18px}
+.ai-intro h1{font-size:23px;margin:0 0 3px}
+.ai-intro p{margin:0}
+.ai-tag{display:inline-flex;align-items:center;border:1px solid var(--line);border-radius:20px;padding:4px 8px;font-size:9px;letter-spacing:.08em;color:var(--mut);white-space:nowrap}
+.ai-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;align-items:start}
+.box.ai-box{width:auto;min-width:0;min-height:100%;}
+.box.ai-wide{grid-column:1/-1}
+.ai-box h2{font-size:16px}
+.ai-box .grid{margin-top:4px}
+.ai-box .grid input,.ai-box .grid select{min-width:0}
+.ai-box button.primary{width:100%}
+.ai-row{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.ai-row button{flex:none}
+.ai-model-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 20px}
+.ai-model{padding:12px 0;border-top:1px solid var(--line);min-width:0}
+.ai-model b{overflow-wrap:anywhere}
+.ai-model p{margin:5px 0 0;overflow-wrap:anywhere}
+.ai-model .ai-tag{margin-left:8px;vertical-align:middle}
+.ai-output{min-height:110px;max-height:280px;white-space:pre-wrap;overflow-wrap:anywhere;margin-top:12px}
+.ai-warning{font-size:11px;color:var(--mut);line-height:1.6;margin:16px 2px 28px}
+@media(max-width:860px){.ai-wrap{padding:12px}.ai-grid{grid-template-columns:1fr}.box.ai-wide{grid-column:auto}.ai-model-list{grid-template-columns:1fr}.ai-intro h1{font-size:19px}}

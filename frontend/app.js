@@ -38,7 +38,8 @@ $("#pw").onkeydown = e => { if (e.key === "Enter") $("#loginbtn").click(); };
 $("#logout").onclick = () => { sessionStorage.removeItem("axu_pw"); location.reload(); };
 $$("#nav button").forEach(b => b.onclick = () => {
   $$("#nav button").forEach(x => x.classList.toggle("on", x === b));
-  ["studio", "keys", "merger", "vault"].forEach(v => $("#view-" + v).hidden = v !== b.dataset.view);
+  ["studio", "keys", "merger", "vault", "ai"].forEach(v => $("#view-" + v).hidden = v !== b.dataset.view);
+  if (b.dataset.view === "ai") loadAiModels();
 });
 $$("#ptabs button").forEach(b => b.onclick = () => {
   $$("#ptabs button").forEach(x => x.classList.toggle("on", x === b));
@@ -439,3 +440,74 @@ $("#mbtn").onclick = async () => {
 };
 
 if (pw) enter();
+
+
+// ---------- AI Lab ----------
+async function loadAiModels() {
+  try {
+    const data = await api("/api/ai/models");
+    const textModels = data.text || [], visionModels = data.vision || [];
+    $("#ai-text-model").innerHTML = textModels.map(m => `<option value="${esc(m.name)}">${esc(m.name)}</option>`).join("") || '<option value="">No trained text models</option>';
+    $("#ai-vision-model").innerHTML = visionModels.map(m => `<option value="${esc(m.name)}">${esc(m.name)}</option>`).join("") || '<option value="">No trained vision models</option>';
+    const groups = [
+      ...textModels.map(m => ({...m, kind: "Text Transformer"})),
+      ...visionModels.map(m => ({...m, kind: "Vision CNN"}))
+    ];
+    $("#ai-model-list").innerHTML = groups.map(m => {
+      const metrics = (m.metrics || []).map(x => m.kind === "Text Transformer"
+        ? `E${x.epoch}: loss ${x.train_loss}`
+        : `E${x.epoch}: validation ${(100 * x.validation_accuracy).toFixed(1)}%`).join(" · ");
+      const details = m.kind === "Text Transformer"
+        ? `${Number(m.parameters || 0).toLocaleString()} parameters · ${m.dataset_bytes || 0} dataset bytes`
+        : `${m.image_count || 0} images · ${(m.classes || []).join(", ")}`;
+      return `<div class="ai-model"><div><b>${esc(m.name)}</b><span class="ai-tag">${esc(m.kind)}</span><p class="muted small">${esc(details)}</p><p class="muted small">${esc(metrics)}</p></div></div>`;
+    }).join("") || '<p class="muted small">No local models yet. Train one above.</p>';
+    if (!data.torch_available) $("#ai-model-list").insertAdjacentHTML("beforeend", '<p class="err small">PyTorch is not installed. Add requirements-ai.txt dependencies and restart the server.</p>');
+  } catch (e) { $("#ai-model-list").textContent = e.message; }
+}
+$("#ai-refresh").onclick = loadAiModels;
+
+function setAiStatus(id, message, bad = false) {
+  const el = $(id); el.textContent = message; el.className = "small " + (bad ? "err" : "muted");
+}
+async function pollAiJob(jobId, statusId) {
+  while (true) {
+    const job = await api(`/api/ai/jobs/${encodeURIComponent(jobId)}`);
+    const metrics = (job.metrics || []).slice(-1)[0];
+    const metricText = metrics ? (metrics.train_loss !== undefined ? ` · train loss ${metrics.train_loss}` : ` · validation ${(100 * metrics.validation_accuracy).toFixed(1)}%`) : "";
+    setAiStatus(statusId, `${job.status.toUpperCase()} · ${job.progress || 0}% · ${job.message || ""}${metricText}`, job.status === "failed");
+    if (["completed", "failed"].includes(job.status)) { if (job.status === "completed") await loadAiModels(); return job; }
+    await new Promise(resolve => setTimeout(resolve, 1800));
+  }
+}
+$("#ai-text-train").onclick = async () => {
+  const file = $("#ai-text-file").files[0];
+  if (!file) return setAiStatus("#ai-text-status", "Choose a text dataset first.", true);
+  const fd = new FormData();
+  fd.append("file", file); fd.append("model_name", $("#ai-text-name").value);
+  ["epochs", "steps", "block", "emb", "heads", "layers"].forEach(k => fd.append(
+    ({epochs:"epochs",steps:"steps_per_epoch",block:"block_size",emb:"embedding_size",heads:"attention_heads",layers:"layers"})[k], $("#ai-text-" + k).value));
+  try { const r = await api("/api/ai/text/train", {method:"POST", body:fd}); await pollAiJob(r.job_id, "#ai-text-status"); }
+  catch (e) { setAiStatus("#ai-text-status", e.message, true); }
+};
+$("#ai-vision-train").onclick = async () => {
+  const file = $("#ai-vision-file").files[0];
+  if (!file) return setAiStatus("#ai-vision-status", "Choose a dataset ZIP first.", true);
+  const fd = new FormData(); fd.append("file", file); fd.append("model_name", $("#ai-vision-name").value);
+  fd.append("epochs", $("#ai-vision-epochs").value); fd.append("image_size", $("#ai-vision-size").value); fd.append("batch_size", $("#ai-vision-batch").value);
+  try { const r = await api("/api/ai/vision/train", {method:"POST", body:fd}); await pollAiJob(r.job_id, "#ai-vision-status"); }
+  catch (e) { setAiStatus("#ai-vision-status", e.message, true); }
+};
+$("#ai-text-generate").onclick = async () => {
+  const model = $("#ai-text-model").value; if (!model) return $("#ai-text-output").textContent = "Train a text model first.";
+  $("#ai-text-output").textContent = "Generating…";
+  try { const r = await api("/api/ai/text/generate", {method:"POST", body:{model, prompt:$("#ai-text-prompt").value, max_new_tokens:160, temperature:0.8}}); $("#ai-text-output").textContent = r.text + "\n\n" + r.warning; }
+  catch (e) { $("#ai-text-output").textContent = e.message; }
+};
+$("#ai-vision-predict").onclick = async () => {
+  const model = $("#ai-vision-model").value, file = $("#ai-vision-test-file").files[0];
+  if (!model || !file) return $("#ai-vision-output").textContent = "Choose a trained vision model and test image.";
+  const fd = new FormData(); fd.append("model_name", model); fd.append("file", file); $("#ai-vision-output").textContent = "Classifying…";
+  try { const r = await api("/api/ai/vision/predict", {method:"POST", body:fd}); $("#ai-vision-output").textContent = `Prediction: ${r.category}\nConfidence: ${(100*r.confidence).toFixed(1)}%\nScores: ${JSON.stringify(r.scores, null, 2)}\n\n${r.warning}`; }
+  catch (e) { $("#ai-vision-output").textContent = e.message; }
+};
